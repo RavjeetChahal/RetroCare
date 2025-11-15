@@ -16,7 +16,7 @@ import { PatientForm } from '../../components/onboarding/PatientForm';
 import { TimeSelectGrid } from '../../components/onboarding/TimeSelectGrid';
 import { VoicePreviewCard } from '../../components/onboarding/VoicePreviewCard';
 import { colors, spacing } from '../../styles/tokens';
-import { VOICE_OPTIONS, VOICE_SAMPLE_SCRIPT } from '../../utils/voices';
+import { VOICE_OPTIONS, getVoiceSampleScript } from '../../utils/voices';
 import { useVoicePreview } from '../../hooks/useVoicePreview';
 import { saveOnboarding } from '../../utils/onboardingService';
 import { formatTimeSlot } from '../../utils/timeSlots';
@@ -149,23 +149,34 @@ export default function OnboardingScreen() {
             </Text>
             {voiceError ? <Text style={styles.errorText}>{voiceError}</Text> : null}
             <View style={styles.voiceList}>
-              {VOICE_OPTIONS.map((voice) => (
-                <VoicePreviewCard
-                  key={voice.id}
-                  voice={voice}
-                  isSelected={voiceChoice === voice.id}
-                  isPlaying={activeVoiceId === voice.id}
-                  isLoading={loadingVoiceId === voice.id}
-                  onSelect={setVoiceChoice}
-                  onPreview={(voiceId) => {
-                    if (activeVoiceId === voiceId) {
-                      stop();
-                    } else {
-                      play(voiceId, VOICE_SAMPLE_SCRIPT);
-                    }
+              {VOICE_OPTIONS.map((voice) => {
+                // Use assistantId if available, otherwise fall back to voice id
+                const identifier = voice.assistantId || voice.id;
+                return (
+                  <VoicePreviewCard
+                    key={voice.id}
+                    voice={voice}
+                    isSelected={(voice.assistantId || voice.id) === voiceChoice}
+                    isPlaying={activeVoiceId === identifier}
+                    isLoading={loadingVoiceId === identifier}
+                    onSelect={(voiceId) => {
+                    // Store the assistantId if available, otherwise use voice id
+                    const voice = VOICE_OPTIONS.find(v => v.id === voiceId);
+                    setVoiceChoice(voice?.assistantId || voiceId);
                   }}
-                />
-              ))}
+                    onPreview={(previewId) => {
+                      if (activeVoiceId === previewId) {
+                        stop();
+                      } else {
+                        // Use assistantId for preview, fall back to voice id if no assistantId
+                        // Generate personalized script with the voice's name
+                        const script = getVoiceSampleScript(voice.name);
+                        play(previewId, script);
+                      }
+                    }}
+                  />
+                );
+              })}
             </View>
           </View>
         );
@@ -191,7 +202,7 @@ export default function OnboardingScreen() {
             />
             <SummaryRow
               label="Voice"
-              value={VOICE_OPTIONS.find((voice) => voice.id === voiceChoice)?.name ?? 'Not selected'}
+              value={VOICE_OPTIONS.find((voice) => (voice.assistantId || voice.id) === voiceChoice)?.name ?? 'Not selected'}
             />
           </View>
         );

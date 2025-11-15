@@ -1,0 +1,35 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "resolveJsonModule": true,
+    "outDir": "./dist",
+    "rootDir": "."
+  },
+  "include": [
+    "**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "../node_modules",
+    "../app",
+    "../components",
+    "../hooks",
+    "../providers",
+    "../utils/elevenLabs.ts",
+    "../utils/apiService.ts",
+    "../utils/onboardingService.ts",
+    "../utils/dashboardService.ts",
+    "../utils/timeSlots.ts",
+    "../utils/tokenCache.ts",
+    "../utils/weekUtils.ts",
+    "../utils/voices.ts"
+  ]
+}
+

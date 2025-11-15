@@ -1,8 +1,19 @@
 import axios from 'axios';
-import { logger } from '../../utils';
+import { logger } from '../utils/logger';
 
 const VAPI_BASE_URL = 'https://api.vapi.ai';
-const VAPI_API_KEY = process.env.VAPI_API_KEY;
+
+/**
+ * Get VAPI API key from environment
+ * Reads at runtime to ensure dotenv has loaded the backend/.env file
+ */
+function getVapiApiKey(): string {
+  const key = process.env.VAPI_API_KEY;
+  if (!key) {
+    throw new Error('VAPI_API_KEY environment variable is not set. Please check backend/.env file.');
+  }
+  return key;
+}
 
 export interface VAPICallRequest {
   phoneNumberId: string;
@@ -38,18 +49,25 @@ export interface VAPICallResponse {
   summary?: string;
 }
 
+export interface VAPIAssistant {
+  id: string;
+  name?: string;
+  voice?: {
+    provider: string;
+    voiceId: string;
+  };
+}
+
 /**
  * Make an outbound call using VAPI
  */
 export async function makeOutboundCall(request: VAPICallRequest): Promise<VAPICallResponse> {
-  if (!VAPI_API_KEY) {
-    throw new Error('VAPI_API_KEY environment variable is not set');
-  }
+  const apiKey = getVapiApiKey();
 
   try {
     const response = await axios.post(`${VAPI_BASE_URL}/call`, request, {
       headers: {
-        Authorization: `Bearer ${VAPI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
     });
@@ -66,14 +84,12 @@ export async function makeOutboundCall(request: VAPICallRequest): Promise<VAPICa
  * Get call status from VAPI
  */
 export async function getCallStatus(callId: string): Promise<VAPICallResponse> {
-  if (!VAPI_API_KEY) {
-    throw new Error('VAPI_API_KEY environment variable is not set');
-  }
+  const apiKey = getVapiApiKey();
 
   try {
     const response = await axios.get(`${VAPI_BASE_URL}/call/${callId}`, {
       headers: {
-        Authorization: `Bearer ${VAPI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
     });
 
@@ -129,5 +145,25 @@ export async function makeCallWithRetry(
 
   logger.error('All VAPI call attempts failed', { phoneNumber: request.customer.number });
   return { success: false, error: lastError };
+}
+
+/**
+ * Get assistant details from VAPI
+ */
+export async function getAssistant(assistantId: string): Promise<VAPIAssistant> {
+  const apiKey = getVapiApiKey();
+
+  try {
+    const response = await axios.get(`${VAPI_BASE_URL}/assistant/${assistantId}`, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+
+    return response.data;
+  } catch (error: any) {
+    logger.error('Failed to get VAPI assistant', error.response?.data || error.message);
+    throw new Error(`Failed to get assistant: ${error.response?.data?.message || error.message}`);
+  }
 }
 

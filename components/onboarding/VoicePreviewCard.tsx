@@ -33,7 +33,7 @@ export function VoicePreviewCard({
       <Text style={styles.description}>{voice.description}</Text>
       <Pressable
         style={[styles.previewButton, isPlaying ? styles.previewButtonActive : undefined]}
-        onPress={() => onPreview(voice.id)}
+        onPress={() => onPreview(voice.assistantId || voice.id)}
       >
         {isLoading ? (
           <ActivityIndicator color="#0f172a" />

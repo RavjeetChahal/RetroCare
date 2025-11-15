@@ -1,5 +1,5 @@
 import * as cron from 'node-cron';
-import { logger } from '../../utils';
+import { logger } from '../utils/logger';
 import { getSupabaseClient } from '../supabase/client';
 import { makeCallWithRetry } from '../vapi';
 import { updatePatient } from '../supabase/patients';
@@ -93,9 +93,11 @@ async function getPatientsDueForCalls(): Promise<Patient[]> {
 async function makeScheduledCall(patient: Patient): Promise<void> {
   logger.info('Making scheduled call', { patientId: patient.id, patientName: patient.name });
 
-  // TODO: Configure VAPI phone number ID and assistant ID from environment
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
-  const assistantId = process.env.VAPI_ASSISTANT_ID;
+  const defaultAssistantId = process.env.VAPI_ASSISTANT_ID;
+  
+  // Use patient's voice_choice as assistantId (now stores VAPI assistant ID)
+  const patientAssistantId = patient.voice_choice || defaultAssistantId;
 
   if (!phoneNumberId) {
     logger.error('VAPI_PHONE_NUMBER_ID not configured');
@@ -103,18 +105,18 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
   }
 
   try {
-    // Build call request
+    // Build call request - use patient's selected assistant
     const callRequest = {
       phoneNumberId,
       customer: {
         number: patient.phone,
       },
-      ...(assistantId && { assistantId }),
-      ...(!assistantId && {
+      ...(patientAssistantId && { assistantId: patientAssistantId }),
+      ...(!patientAssistantId && {
         assistantOverrides: {
           voice: {
             provider: 'elevenlabs',
-            voiceId: patient.voice_choice,
+            voiceId: patient.voice_choice, // Fallback to voice ID if assistant ID not available
           },
           firstMessage: `Hello ${patient.name}, this is RetroCare calling to check in on you.`,
         },
@@ -145,13 +147,54 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
       });
     } else {
       // Create call log entry
-      await createCallLog({
+      const callLog = await createCallLog({
         patient_id: patient.id,
         timestamp: new Date().toISOString(),
         summary: result.callId
           ? `Call completed successfully. Call ID: ${result.callId}`
           : 'Call completed',
       });
+
+      // Check for voice anomaly if audio recording is available
+      if (result.callId) {
+        try {
+          const { getCallStatus } = await import('../vapi');
+          const callStatus = await getCallStatus(result.callId);
+          
+          // VAPI may provide recording URL in transcript or recording fields
+          const audioUrl = 
+            (callStatus as any).recordingUrl ||
+            (callStatus as any).recording?.url ||
+            (callStatus as any).transcript?.audioUrl ||
+            null;
+          
+          if (audioUrl) {
+            // Trigger anomaly check asynchronously (don't block scheduler)
+            const { checkVoiceAnomaly } = await import('../anomaly/anomalyService');
+            checkVoiceAnomaly(patient.id, callLog.id, audioUrl)
+              .then((anomalyResult) => {
+                if (anomalyResult.success && anomalyResult.alertType) {
+                  logger.info('Voice anomaly detected in scheduled call', {
+                    patientId: patient.id,
+                    score: anomalyResult.anomalyScore,
+                    alertType: anomalyResult.alertType,
+                  });
+                }
+              })
+              .catch((err) => {
+                logger.error('Anomaly check failed (non-blocking)', {
+                  patientId: patient.id,
+                  error: err.message,
+                });
+              });
+          }
+        } catch (error: any) {
+          logger.warn('Could not check anomaly - VAPI status unavailable', {
+            patientId: patient.id,
+            error: error.message,
+          });
+        }
+      }
 
       logger.info('Scheduled call completed', {
         patientId: patient.id,

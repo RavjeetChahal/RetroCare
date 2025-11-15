@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 import { Audio, AVPlaybackStatus } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import { Platform } from 'react-native';
 import { fetchVoicePreview } from '../utils/elevenLabs';
 import { arrayBufferToBase64 } from '../utils/buffer';
 
@@ -20,41 +21,56 @@ export function useVoicePreview() {
   }, []);
 
   const play = useCallback(
-    async (voiceId: string, script: string) => {
+    async (assistantId: string, script: string) => {
       setError(null);
       if (loadingVoiceId) {
         return;
       }
-      setLoadingVoiceId(voiceId);
+      setLoadingVoiceId(assistantId);
       try {
         if (soundRef.current) {
           await stop();
         }
 
-        const audioBuffer = await fetchVoicePreview(voiceId, script);
-        const base64 = arrayBufferToBase64(audioBuffer);
-        const cacheRoot =
-          ((FileSystem as unknown as { cacheDirectory?: string }).cacheDirectory ??
-            (FileSystem as unknown as { documentDirectory?: string }).documentDirectory) ?? '';
-        if (!cacheRoot) {
-          throw new Error('Unable to access device cache directory.');
+        const audioBuffer = await fetchVoicePreview(assistantId, script);
+        
+        // For web, use blob URL; for native, use file system
+        let audioUri: string;
+        
+        if (Platform.OS === 'web') {
+          // Web: Create blob URL from ArrayBuffer
+          const blob = new Blob([audioBuffer], { type: 'audio/mpeg' });
+          audioUri = URL.createObjectURL(blob);
+        } else {
+          // Native: Use file system cache
+          const base64 = arrayBufferToBase64(audioBuffer);
+          const cacheRoot =
+            FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? '';
+          if (!cacheRoot) {
+            throw new Error('Unable to access device cache directory.');
+          }
+          const audioPath = `${cacheRoot}${assistantId}-preview.mp3`;
+          await FileSystem.writeAsStringAsync(audioPath, base64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+          audioUri = audioPath;
         }
-        const audioPath = `${cacheRoot}${voiceId}-preview.mp3`;
-        await FileSystem.writeAsStringAsync(audioPath, base64, {
-          encoding: 'base64',
-        });
 
         const { sound } = await Audio.Sound.createAsync(
-          { uri: audioPath },
+          { uri: audioUri },
           { shouldPlay: true },
           (status: AVPlaybackStatus) => {
             if ('didJustFinish' in status && status.didJustFinish) {
               setActiveVoiceId(null);
+              // Clean up blob URL on web
+              if (Platform.OS === 'web' && audioUri.startsWith('blob:')) {
+                URL.revokeObjectURL(audioUri);
+              }
             }
           },
         );
         soundRef.current = sound;
-        setActiveVoiceId(voiceId);
+        setActiveVoiceId(assistantId);
       } catch (err: any) {
         setError(err.message ?? 'Unable to play preview');
       } finally {

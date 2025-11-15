@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './client';
-import { logger } from '../../utils';
+import { logger } from '../utils/logger';
 
 export async function invokeFunction<T = unknown>(
   functionName: string,

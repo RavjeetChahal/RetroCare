@@ -35,6 +35,9 @@ yarn-error.*
 .env.*
 .env*.local
 
+# Backend environment file (contains sensitive keys)
+backend/.env
+
 # typescript
 *.tsbuildinfo
 

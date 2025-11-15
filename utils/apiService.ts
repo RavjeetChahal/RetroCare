@@ -26,14 +26,14 @@ export async function callNow(patientId: string): Promise<{
 }
 
 /**
- * Generate voice preview
+ * Generate voice preview using VAPI assistant ID
  */
-export async function generatePreview(voiceId: string, text: string): Promise<{
+export async function generatePreview(assistantId: string, text: string): Promise<{
   audio: string;
   format: string;
 }> {
   try {
-    const response = await apiClient.post('/api/generate-preview', { voiceId, text });
+    const response = await apiClient.post('/api/generate-preview', { assistantId, text });
     return response.data;
   } catch (error: any) {
     throw new Error(error.response?.data?.error || error.message || 'Failed to generate preview');

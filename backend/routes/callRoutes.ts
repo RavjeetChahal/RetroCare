@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
-import { logger } from '../../utils';
+import { logger } from '../utils/logger';
 import { getSupabaseClient } from '../supabase/client';
-import { makeCallWithRetry } from '../vapi';
+import { makeCallWithRetry, getAssistant } from '../vapi';
 import { updatePatient } from '../supabase/patients';
 import { createCallLog, listCallLogsForPatient } from '../supabase/callLogs';
 import type { Patient } from '../supabase/types';
@@ -35,24 +35,27 @@ router.post('/call-now', async (req: Request, res: Response) => {
 
     // Get VAPI configuration
     const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
-    const assistantId = process.env.VAPI_ASSISTANT_ID;
+    const defaultAssistantId = process.env.VAPI_ASSISTANT_ID;
+    
+    // Use patient's voice_choice as assistantId (now stores VAPI assistant ID)
+    const patientAssistantId = (patient as Patient).voice_choice || defaultAssistantId;
 
     if (!phoneNumberId) {
       return res.status(500).json({ error: 'VAPI phone number not configured' });
     }
 
-    // Build call request
+    // Build call request - use patient's selected assistant
     const callRequest = {
       phoneNumberId,
       customer: {
         number: (patient as Patient).phone,
       },
-      ...(assistantId && { assistantId }),
-      ...(!assistantId && {
+      ...(patientAssistantId && { assistantId: patientAssistantId }),
+      ...(!patientAssistantId && {
         assistantOverrides: {
           voice: {
             provider: 'elevenlabs',
-            voiceId: (patient as Patient).voice_choice,
+            voiceId: (patient as Patient).voice_choice, // Fallback to voice ID if assistant ID not available
           },
           firstMessage: `Hello ${(patient as Patient).name}, this is RetroCare calling to check in on you.`,
         },
@@ -81,13 +84,60 @@ router.post('/call-now', async (req: Request, res: Response) => {
       logger.warn('Call failed after retries', { patientId });
     } else {
       // Create call log entry
-      await createCallLog({
+      const callLog = await createCallLog({
         patient_id: patientId,
         timestamp: new Date().toISOString(),
         summary: result.callId
           ? `Manual call completed. Call ID: ${result.callId}`
           : 'Manual call completed',
       });
+
+      // Check for voice anomaly if audio recording is available
+      if (result.callId) {
+        try {
+          const { getCallStatus } = await import('../vapi');
+          const callStatus = await getCallStatus(result.callId);
+          
+          // VAPI may provide recording URL in transcript or recording fields
+          // Check common field names for audio recording URL
+          const audioUrl = 
+            (callStatus as any).recordingUrl ||
+            (callStatus as any).recording?.url ||
+            (callStatus as any).transcript?.audioUrl ||
+            null;
+          
+          if (audioUrl) {
+            // Trigger anomaly check asynchronously (don't block response)
+            const { checkVoiceAnomaly } = await import('../anomaly/anomalyService');
+            checkVoiceAnomaly(patientId, callLog.id, audioUrl)
+              .then((anomalyResult) => {
+                if (anomalyResult.success && anomalyResult.alertType) {
+                  logger.info('Voice anomaly detected', {
+                    patientId,
+                    score: anomalyResult.anomalyScore,
+                    alertType: anomalyResult.alertType,
+                  });
+                }
+              })
+              .catch((err) => {
+                logger.error('Anomaly check failed (non-blocking)', {
+                  patientId,
+                  error: err.message,
+                });
+              });
+          } else {
+            logger.debug('No audio recording URL available for anomaly check', {
+              patientId,
+              callId: result.callId,
+            });
+          }
+        } catch (error: any) {
+          logger.warn('Could not check anomaly - VAPI status unavailable', {
+            patientId,
+            error: error.message,
+          });
+        }
+      }
     }
 
     res.json({
@@ -103,19 +153,31 @@ router.post('/call-now', async (req: Request, res: Response) => {
 
 /**
  * POST /api/generate-preview
- * Generate a voice preview using ElevenLabs
+ * Generate a voice preview using VAPI assistant (fetches voice config from VAPI, then uses ElevenLabs)
  */
 router.post('/generate-preview', async (req: Request, res: Response) => {
   try {
-    const { voiceId, text } = req.body;
+    const { assistantId, text } = req.body;
 
-    if (!voiceId || !text) {
-      return res.status(400).json({ error: 'voiceId and text are required' });
+    if (!assistantId || !text) {
+      return res.status(400).json({ error: 'assistantId and text are required' });
     }
 
+    // Get the ElevenLabs voice ID for this assistant
+    // These are the actual voice IDs from your ElevenLabs account
+    const { getPreviewVoiceId } = await import('../utils/voiceMapping');
+    const previewVoiceId = getPreviewVoiceId(assistantId);
+    
+    logger.info('Using preview voice', { 
+      assistantId,
+      previewVoiceId,
+      note: 'Using actual ElevenLabs voice ID for preview'
+    });
+
+    // Use ElevenLabs to generate the preview with the actual voice ID
     const { generateVoicePreview, arrayBufferToBase64 } = await import('../elevenlabs');
 
-    const audioBuffer = await generateVoicePreview(voiceId, text);
+    const audioBuffer = await generateVoicePreview(previewVoiceId, text);
     const base64 = arrayBufferToBase64(audioBuffer);
 
     res.json({
@@ -123,8 +185,37 @@ router.post('/generate-preview', async (req: Request, res: Response) => {
       format: 'mp3',
     });
   } catch (error: any) {
-    logger.error('Error in generate-preview endpoint', error);
-    res.status(500).json({ error: error.message || 'Internal server error' });
+    logger.error('Error in generate-preview endpoint', {
+      message: error.message,
+      assistantId: req.body.assistantId,
+      error: error.response?.data || error.message,
+    });
+    
+    // Provide user-friendly error messages
+    // Check for missing API key first (before other errors)
+    if (error.message?.includes('ELEVENLABS_API_KEY') && error.message?.includes('not set')) {
+      return res.status(500).json({ 
+        error: 'Voice preview service is not configured. Please check backend/.env file.' 
+      });
+    }
+    
+    // Pass through quota and permission errors with full details
+    if (error.message?.includes('quota') || error.message?.includes('permission')) {
+      return res.status(500).json({ 
+        error: error.message 
+      });
+    }
+    
+    // Pass through 401 authentication errors with details
+    if (error.response?.status === 401 || error.message?.includes('authentication failed')) {
+      return res.status(500).json({ 
+        error: error.message || 'ElevenLabs API authentication failed. Please check your API key in backend/.env' 
+      });
+    }
+    
+    res.status(500).json({ 
+      error: error.message || 'Failed to generate voice preview' 
+    });
   }
 });
 
@@ -145,6 +236,60 @@ router.get('/call-logs/:patientId', async (req: Request, res: Response) => {
     res.json({ callLogs });
   } catch (error: any) {
     logger.error('Error in call-logs endpoint', error);
+    res.status(500).json({ error: error.message || 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/sync-voice-ids
+ * Fetch voice IDs from VAPI assistants and return the mapping
+ */
+router.get('/sync-voice-ids', async (req: Request, res: Response) => {
+  try {
+    const ASSISTANT_IDS = {
+      Kenji: 'b127b52b-bdb5-4c88-b55d-b3b2e62051ab',
+      Priya: 'd480cd37-26ca-4fb9-a146-c64b547e3de1',
+      Lucy: '67bdddf5-1556-4417-82f9-580593b80153',
+      Clyde: '6662cc0e-d6c6-45ec-a580-fe4465b80aeb',
+      Julia: '6f576490-1309-4a49-8764-6cabb1264b74',
+    };
+
+    const voiceMap: Record<string, string> = {};
+    const results: Array<{ name: string; assistantId: string; voiceId?: string; error?: string }> = [];
+
+    for (const [name, assistantId] of Object.entries(ASSISTANT_IDS)) {
+      try {
+        const assistant = await getAssistant(assistantId);
+        
+        if (assistant.voice?.provider === 'elevenlabs' && assistant.voice?.voiceId) {
+          voiceMap[assistantId] = assistant.voice.voiceId;
+          results.push({
+            name,
+            assistantId,
+            voiceId: assistant.voice.voiceId,
+          });
+        } else {
+          results.push({
+            name,
+            assistantId,
+            error: 'No ElevenLabs voice found in assistant',
+          });
+        }
+      } catch (error: any) {
+        results.push({
+          name,
+          assistantId,
+          error: error.message,
+        });
+      }
+    }
+
+    res.json({
+      voiceMap,
+      results,
+    });
+  } catch (error: any) {
+    logger.error('Error in sync-voice-ids endpoint', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });

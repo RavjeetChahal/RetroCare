@@ -1,33 +1,36 @@
-const ELEVEN_BASE_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
+/**
+ * Generate voice preview using VAPI assistant ID
+ * This function now calls the backend API which handles VAPI integration
+ */
+export async function fetchVoicePreview(assistantId: string, text: string): Promise<ArrayBuffer> {
+  const API_BASE_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
 
-export async function fetchVoicePreview(voiceId: string, text: string): Promise<ArrayBuffer> {
-  const apiKey = process.env.EXPO_PUBLIC_ELEVENLABS_KEY;
-
-  if (!apiKey) {
-    throw new Error('Missing EXPO_PUBLIC_ELEVENLABS_KEY environment variable.');
-  }
-
-  const response = await fetch(`${ELEVEN_BASE_URL}/${voiceId}`, {
+  const response = await fetch(`${API_BASE_URL}/api/generate-preview`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'xi-api-key': apiKey,
-      Accept: 'audio/mpeg',
     },
     body: JSON.stringify({
+      assistantId,
       text,
-      voice_settings: {
-        stability: 0.4,
-        similarity_boost: 0.7,
-      },
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`ElevenLabs preview failed: ${response.status} ${errorText}`);
+    throw new Error(`Voice preview failed: ${response.status} ${errorText}`);
   }
 
-  return response.arrayBuffer();
+  const data = await response.json();
+  
+  // Convert base64 audio to ArrayBuffer
+  const base64 = data.audio;
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  return bytes.buffer;
 }
 

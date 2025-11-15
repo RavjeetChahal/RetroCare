@@ -1,6 +1,6 @@
 import { getSupabaseClient } from './client';
 import type { CallLog, NewPatient, Patient } from './types';
-import { logger } from '../../utils';
+import { logger } from '../utils/logger';
 
 const TABLE = 'patients';
 
