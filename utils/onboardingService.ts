@@ -45,6 +45,12 @@ export async function saveOnboarding(payload: OnboardingPayload) {
     throw caregiverError;
   }
 
+  // Determine assigned_assistant from voice_choice (which is now assistant ID)
+  // Map assistant ID to assistant name using the voice options
+  const { getVoiceOptionByAssistantId } = await import('./voices');
+  const voiceOption = getVoiceOptionByAssistantId(payload.voiceChoice);
+  const assignedAssistant = voiceOption?.name || null;
+  
   const patientInsert = {
     caregiver_id: caregiverData.id,
     name: payload.patient.name,
@@ -54,7 +60,8 @@ export async function saveOnboarding(payload: OnboardingPayload) {
     meds: payload.patient.meds,
     conditions: payload.patient.conditions,
     call_schedule: payload.callSchedule,
-    voice_choice: payload.voiceChoice,
+    voice_choice: payload.voiceChoice, // VAPI assistant ID
+    assigned_assistant: assignedAssistant, // Assistant name for easy reference
   };
 
   const { data: patientData, error: patientError } = await supabaseClient

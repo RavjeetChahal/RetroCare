@@ -1,3 +1,8 @@
+/**
+ * Server configuration for serving both frontend and backend together
+ * Use this if you want to deploy frontend and backend on the same service
+ */
+
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -31,7 +36,7 @@ if (process.env.NODE_ENV !== 'production') {
   console.log('[RetroCare] Running in production - using platform environment variables');
 }
 
-// Validate critical environment variables on startup
+// Validate critical environment variables
 const requiredEnvVars = ['ELEVENLABS_API_KEY', 'VAPI_API_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
 const missingVars = requiredEnvVars.filter((key) => !process.env[key]);
 
@@ -39,16 +44,7 @@ if (missingVars.length > 0) {
   logger.warn(`Missing required environment variables: ${missingVars.join(', ')}`);
   logger.warn('Make sure backend/.env file exists and contains all required keys');
 } else {
-  logger.info('✓ All required environment variables loaded from backend/.env');
-  logger.info(`✓ ELEVENLABS_API_KEY: ${process.env.ELEVENLABS_API_KEY?.substring(0, 10)}...`);
-  logger.info(`✓ VAPI_API_KEY: ${process.env.VAPI_API_KEY?.substring(0, 10)}...`);
-  
-  // VAPI_ASSISTANT_ID is optional (only used as fallback)
-  if (process.env.VAPI_ASSISTANT_ID) {
-    logger.info(`✓ VAPI_ASSISTANT_ID: ${process.env.VAPI_ASSISTANT_ID.substring(0, 10)}... (optional fallback)`);
-  } else {
-    logger.info('✓ VAPI_ASSISTANT_ID: not set (optional - each voice has its own assistant ID)');
-  }
+  logger.info('✓ All required environment variables loaded');
 }
 
 const app = express();
@@ -63,8 +59,39 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// API routes
-app.use(routes);
+// API routes (must come before static file serving)
+app.use('/api', routes);
+
+// Serve static frontend files (if dist folder exists)
+const frontendPath = path.resolve(process.cwd(), 'dist');
+const frontendExists = require('fs').existsSync(frontendPath);
+
+if (frontendExists) {
+  logger.info(`Serving frontend from: ${frontendPath}`);
+  app.use(express.static(frontendPath));
+  
+  // Fallback to index.html for client-side routing (SPA)
+  app.get('*', (req, res) => {
+    // Don't serve index.html for API routes
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(path.join(frontendPath, 'index.html'));
+  });
+} else {
+  logger.warn(`Frontend dist folder not found at ${frontendPath}`);
+  logger.warn('Frontend will not be served. Make sure to run: npx expo export --platform web');
+  
+  // Fallback route for when frontend isn't built
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api')) {
+      res.status(404).json({ 
+        error: 'Frontend not built. Run: npx expo export --platform web',
+        path: req.path 
+      });
+    }
+  });
+}
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -74,7 +101,11 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 
 // Start server
 app.listen(PORT, () => {
-  logger.info(`RetroCare backend server running on port ${PORT}`);
+  logger.info(`RetroCare server running on port ${PORT}`);
+  if (frontendExists) {
+    logger.info('✓ Frontend is being served');
+  }
+  logger.info('✓ API routes available at /api/*');
   
   // Start the call scheduler
   startScheduler();

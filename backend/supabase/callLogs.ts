@@ -9,6 +9,7 @@ export async function createCallLog(input: NewCallLog): Promise<CallLog> {
   const payload = {
     ...input,
     flags: input.flags ?? [],
+    meds_taken: input.meds_taken ?? [],
   };
 
   const { data, error } = await supabase.from(TABLE).insert(payload).select().single();
@@ -17,6 +18,23 @@ export async function createCallLog(input: NewCallLog): Promise<CallLog> {
     throw error;
   }
 
+  return data as CallLog;
+}
+
+export async function updateCallLog(id: string, updates: Partial<CallLog>): Promise<CallLog> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update(updates)
+    .eq('id', id)
+    .select()
+    .single();
+  
+  if (error) {
+    logger.error('Failed to update call log', error);
+    throw error;
+  }
+  
   return data as CallLog;
 }
 

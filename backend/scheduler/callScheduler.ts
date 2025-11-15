@@ -5,43 +5,10 @@ import { makeCallWithRetry } from '../vapi';
 import { updatePatient } from '../supabase/patients';
 import { createCallLog } from '../supabase/callLogs';
 import type { Patient } from '../supabase/types';
+import { shouldCallNow } from './timeUtils';
+import { getAssistantByName, getAssistantId } from '../assistants';
 
-/**
- * Parse time slot (e.g., "09:00" or "09:00-10:00") and return hour and minute
- */
-function parseTimeSlot(timeSlot: string): { hour: number; minute: number } | null {
-  const match = timeSlot.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return null;
-
-  const hour = parseInt(match[1], 10);
-  const minute = parseInt(match[2], 10);
-
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-
-  return { hour, minute };
-}
-
-/**
- * Check if a time slot matches the current time (within a 1-minute window)
- */
-function isTimeSlotNow(timeSlot: string, timezone: string): boolean {
-  const parsed = parseTimeSlot(timeSlot);
-  if (!parsed) return false;
-
-  const now = new Date();
-  const tzTime = new Date(
-    now.toLocaleString('en-US', {
-      timeZone: timezone,
-    }),
-  );
-
-  return (
-    tzTime.getHours() === parsed.hour &&
-    tzTime.getMinutes() === parsed.minute
-  );
-}
+// Time utilities moved to timeUtils.ts
 
 /**
  * Get all patients that need calls right now
@@ -66,20 +33,19 @@ async function getPatientsDueForCalls(): Promise<Patient[]> {
       continue;
     }
 
-    // Check if any time slot matches now
-    for (const timeSlot of patient.call_schedule) {
-      if (isTimeSlotNow(timeSlot, patient.timezone)) {
-        // Check if we already called today
-        const lastCallAt = patient.last_call_at
-          ? new Date(patient.last_call_at)
-          : null;
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
-        if (!lastCallAt || lastCallAt < today) {
-          duePatients.push(patient);
-          break;
-        }
+    // Check if current hour matches schedule (hourly scheduling)
+    if (shouldCallNow(patient.call_schedule, patient.timezone)) {
+      // Check if we already called in this hour
+      const lastCallAt = patient.last_call_at
+        ? new Date(patient.last_call_at)
+        : null;
+      
+      const now = new Date();
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      
+      // Only call if we haven't called in the last hour
+      if (!lastCallAt || lastCallAt < oneHourAgo) {
+        duePatients.push(patient);
       }
     }
   }
@@ -94,10 +60,22 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
   logger.info('Making scheduled call', { patientId: patient.id, patientName: patient.name });
 
   const phoneNumberId = process.env.VAPI_PHONE_NUMBER_ID;
-  const defaultAssistantId = process.env.VAPI_ASSISTANT_ID;
+  const webhookUrl = process.env.VAPI_WEBHOOK_URL || `${process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000'}/api/vapi/call-ended`;
   
-  // Use patient's voice_choice as assistantId (now stores VAPI assistant ID)
-  const patientAssistantId = patient.voice_choice || defaultAssistantId;
+  // Get assistant ID from assigned_assistant name or fallback to voice_choice
+  let assistantId: string | undefined;
+  let assistant = null;
+  
+  if (patient.assigned_assistant) {
+    assistant = getAssistantByName(patient.assigned_assistant);
+    assistantId = assistant?.assistantId;
+  } else if (patient.voice_choice) {
+    // Fallback: voice_choice should be assistant ID
+    assistant = getAssistantById(patient.voice_choice);
+    assistantId = patient.voice_choice;
+  } else {
+    assistantId = process.env.VAPI_ASSISTANT_ID;
+  }
 
   if (!phoneNumberId) {
     logger.error('VAPI_PHONE_NUMBER_ID not configured');
@@ -105,26 +83,25 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
   }
 
   try {
-    // Build call request - use patient's selected assistant
+    if (!assistantId) {
+      logger.error('No assistant ID available for patient', { patientId: patient.id });
+      return;
+    }
+    
+    // Build call request with webhook for call-ended events
     const callRequest = {
       phoneNumberId,
+      assistantId,
       customer: {
         number: patient.phone,
       },
-      ...(patientAssistantId && { assistantId: patientAssistantId }),
-      ...(!patientAssistantId && {
-        assistantOverrides: {
-          voice: {
-            provider: 'elevenlabs',
-            voiceId: patient.voice_choice, // Fallback to voice ID if assistant ID not available
-          },
-          firstMessage: `Hello ${patient.name}, this is RetroCare calling to check in on you.`,
-        },
-      }),
+      webhook: {
+        url: webhookUrl,
+      },
     };
 
-    // Make call with retry
-    const result = await makeCallWithRetry(callRequest);
+    // Make call with retry (2 attempts, 5 minutes apart)
+    const result = await makeCallWithRetry(callRequest, 5 * 60 * 1000);
 
     // Update patient's last_call_at
     await updatePatient(patient.id, {
@@ -132,71 +109,66 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
     });
 
     if (!result.success) {
-      // Set low-priority flag if both attempts failed
-      const currentFlags = Array.isArray(patient.flags) ? patient.flags : [];
-      const updatedFlags = Array.from(
-        new Set([...currentFlags, 'low-priority']),
-      );
-
-      await updatePatient(patient.id, {
-        flags: updatedFlags,
-      });
-
-      logger.warn('Call failed after retries, set low-priority flag', {
+      // Both attempts failed - log and notify caregiver
+      logger.warn('Call failed after retries', {
         patientId: patient.id,
+        error: result.error,
       });
-    } else {
-      // Create call log entry
-      const callLog = await createCallLog({
-        patient_id: patient.id,
-        timestamp: new Date().toISOString(),
-        summary: result.callId
-          ? `Call completed successfully. Call ID: ${result.callId}`
-          : 'Call completed',
-      });
-
-      // Check for voice anomaly if audio recording is available
-      if (result.callId) {
-        try {
-          const { getCallStatus } = await import('../vapi');
-          const callStatus = await getCallStatus(result.callId);
-          
-          // VAPI may provide recording URL in transcript or recording fields
-          const audioUrl = 
-            (callStatus as any).recordingUrl ||
-            (callStatus as any).recording?.url ||
-            (callStatus as any).transcript?.audioUrl ||
-            null;
-          
-          if (audioUrl) {
-            // Trigger anomaly check asynchronously (don't block scheduler)
-            const { checkVoiceAnomaly } = await import('../anomaly/anomalyService');
-            checkVoiceAnomaly(patient.id, callLog.id, audioUrl)
-              .then((anomalyResult) => {
-                if (anomalyResult.success && anomalyResult.alertType) {
-                  logger.info('Voice anomaly detected in scheduled call', {
-                    patientId: patient.id,
-                    score: anomalyResult.anomalyScore,
-                    alertType: anomalyResult.alertType,
-                  });
-                }
-              })
-              .catch((err) => {
-                logger.error('Anomaly check failed (non-blocking)', {
-                  patientId: patient.id,
-                  error: err.message,
-                });
-              });
-          }
-        } catch (error: any) {
-          logger.warn('Could not check anomaly - VAPI status unavailable', {
-            patientId: patient.id,
-            error: error.message,
-          });
+      
+      // Use logCallAttempt tool to record the failure
+      const { routeToolCall } = await import('../vapi/tools');
+      await routeToolCall(
+        {
+          name: 'logCallAttempt',
+          parameters: {
+            outcome: 'no_answer',
+            summary: `Call failed after 2 attempts: ${result.error}`,
+          },
+        },
+        {
+          patientId: patient.id,
+          callId: result.callId || 'unknown',
+          assistantName: assistant?.name || 'Unknown',
+          timestamp: new Date().toISOString(),
         }
-      }
-
-      logger.info('Scheduled call completed', {
+      );
+      
+      // Update flags
+      const { routeToolCall: routeTool } = await import('../vapi/tools');
+      await routeTool(
+        {
+          name: 'updateFlags',
+          parameters: {
+            flags: ['did_not_answer_twice'],
+          },
+        },
+        {
+          patientId: patient.id,
+          callId: result.callId || 'unknown',
+          assistantName: assistant?.name || 'Unknown',
+          timestamp: new Date().toISOString(),
+        }
+      );
+      
+      // Notify caregiver with low priority
+      await routeTool(
+        {
+          name: 'notifyCaregiver',
+          parameters: {
+            message: `${patient.name} did not answer the scheduled call after 2 attempts.`,
+            priority: 'low',
+          },
+        },
+        {
+          patientId: patient.id,
+          callId: result.callId || 'unknown',
+          assistantName: assistant?.name || 'Unknown',
+          timestamp: new Date().toISOString(),
+        }
+      );
+    } else {
+      // Call succeeded - webhook will handle the rest
+      logger.info('Scheduled call initiated successfully', {
         patientId: patient.id,
         callId: result.callId,
       });
@@ -231,13 +203,14 @@ export async function runScheduledCalls(): Promise<void> {
 
 /**
  * Start the cron scheduler
+ * Runs every hour at the top of the hour (e.g., 09:00, 10:00, 11:00)
  */
 export function startScheduler(): void {
-  // Run every minute to check for scheduled calls
-  cron.schedule('* * * * *', async () => {
+  // Run every hour at minute 0 (e.g., 09:00, 10:00, 11:00)
+  cron.schedule('0 * * * *', async () => {
     await runScheduledCalls();
   });
 
-  logger.info('Call scheduler started (runs every minute)');
+  logger.info('Call scheduler started (runs every hour at :00)');
 }
 

@@ -1,0 +1,24 @@
+services:
+  # Option 1: Backend Only (Recommended for separate deployment)
+  - type: web
+    name: retrocare-backend
+    env: node
+    buildCommand: npm install
+    startCommand: npx tsx backend/server.ts
+    envVars:
+      - key: NODE_ENV
+        value: production
+    healthCheckPath: /health
+
+  # Option 2: Frontend + Backend Together (If you prefer one service)
+  # Uncomment this and comment out the backend-only service above
+  # - type: web
+  #   name: retrocare-full
+  #   env: node
+  #   buildCommand: npm install && npx expo export --platform web
+  #   startCommand: npx tsx backend/serverWithFrontend.ts
+  #   envVars:
+  #     - key: NODE_ENV
+  #       value: production
+  #   healthCheckPath: /health
+
