@@ -1173,12 +1173,46 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     }
     
     // Check for voice anomaly if recording is available
-    if (recordingUrl && callAnswered) {
+    // If recording URL not in webhook, try fetching from VAPI API
+    let finalRecordingUrl = recordingUrl;
+    if (!finalRecordingUrl && callAnswered && callId && callId !== 'unknown') {
       try {
+        logger.info('Recording URL not in webhook, fetching from VAPI API', { callId });
+        const { getCallStatus } = await import('../vapi/client');
+        const callStatus = await getCallStatus(callId);
+        
+        // Try multiple possible field names for recording URL
+        finalRecordingUrl = 
+          (callStatus as any).recordingUrl ||
+          (callStatus as any).recording?.url ||
+          (callStatus as any).transcript?.audioUrl ||
+          null;
+        
+        if (finalRecordingUrl) {
+          logger.info('Recording URL fetched from VAPI API', { callId, recordingUrl: finalRecordingUrl });
+        } else {
+          logger.warn('Recording URL not available from VAPI API', { callId });
+        }
+      } catch (error: any) {
+        logger.warn('Failed to fetch recording URL from VAPI API', {
+          error: error.message,
+          callId,
+        });
+      }
+    }
+    
+    if (finalRecordingUrl && callAnswered) {
+      try {
+        logger.info('Starting voice anomaly check', {
+          patientId: patient.id,
+          callLogId,
+          recordingUrl: finalRecordingUrl,
+        });
+        
         const anomalyResult = await checkVoiceAnomaly(
           patient.id,
           callLogId,
-          recordingUrl
+          finalRecordingUrl
         );
         
         if (anomalyResult.success && anomalyResult.anomalyScore !== null) {
@@ -1187,6 +1221,13 @@ router.post('/call-ended', async (req: Request, res: Response) => {
             .from('call_logs')
             .update({ anomaly_score: anomalyResult.anomalyScore })
             .eq('id', callLogId);
+          
+          logger.info('Voice anomaly check completed', {
+            patientId: patient.id,
+            callLogId,
+            anomalyScore: anomalyResult.anomalyScore,
+            alertType: anomalyResult.alertType,
+          });
           
           // Update daily check-in with anomaly data
           if (anomalyResult.anomalyScore > 0.40) {
@@ -1225,9 +1266,16 @@ router.post('/call-ended', async (req: Request, res: Response) => {
           error: error.message,
           patientId: patient.id,
           callId,
+          stack: error.stack,
         });
         // Don't fail the webhook if anomaly check fails
       }
+    } else if (callAnswered && !finalRecordingUrl) {
+      logger.warn('Voice anomaly check skipped - no recording URL available', {
+        patientId: patient.id,
+        callId,
+        callAnswered,
+      });
     }
     
     const webhookDuration = Date.now() - webhookStartTime;
