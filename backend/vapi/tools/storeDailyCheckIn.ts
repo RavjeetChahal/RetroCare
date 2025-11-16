@@ -16,10 +16,17 @@ export async function storeDailyCheckIn(
   try {
     const {
       sleepHours,
+      sleep_hours,
       sleepQuality,
+      sleep_quality,
       summary,
       flags,
+      mood,
     } = parameters;
+    
+    // Handle both camelCase and snake_case parameter names
+    const sleepHoursValue = sleepHours || sleep_hours;
+    const sleepQualityValue = sleepQuality || sleep_quality;
     
     const supabase = getSupabaseClient();
     const today = new Date().toISOString().split('T')[0];
@@ -35,10 +42,11 @@ export async function storeDailyCheckIn(
     const checkInData: Partial<DailyCheckIn> = {
       patient_id: context.patientId,
       date: today,
-      sleep_hours: sleepHours ? Number(sleepHours) : null,
-      sleep_quality: sleepQuality as string || null,
+      sleep_hours: sleepHoursValue ? Number(sleepHoursValue) : null,
+      sleep_quality: sleepQualityValue as string || null,
       summary: summary as string || null,
       flags: (flags as unknown[]) || [],
+      mood: mood as 'good' | 'neutral' | 'bad' | null || null,
       updated_at: new Date().toISOString(),
     };
     

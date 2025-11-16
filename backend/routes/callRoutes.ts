@@ -44,13 +44,34 @@ router.post('/call-now', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'VAPI phone number not configured' });
     }
 
-    // Build call request - use patient's selected assistant
+    // Prepare patient context for assistant
+    const patientMeds = Array.isArray((patient as Patient).meds) 
+      ? (patient as Patient).meds.map((m: any) => typeof m === 'string' ? m : m.name || m.medName || String(m)).filter(Boolean)
+      : [];
+    const patientConditions = Array.isArray((patient as Patient).conditions)
+      ? (patient as Patient).conditions.map((c: any) => typeof c === 'string' ? c : c.name || String(c)).filter(Boolean)
+      : [];
+    
+    // Build call request - use patient's selected assistant with context
     const callRequest = {
       phoneNumberId,
       customer: {
         number: (patient as Patient).phone,
       },
-      ...(patientAssistantId && { assistantId: patientAssistantId }),
+      ...(patientAssistantId && { 
+        assistantId: patientAssistantId,
+        assistantOverrides: {
+          variableValues: {
+            patientName: (patient as Patient).name,
+            patientAge: String((patient as Patient).age || ''),
+            medications: patientMeds.join(', '),
+            medicationsList: JSON.stringify(patientMeds),
+            conditions: patientConditions.join(', '),
+            conditionsList: JSON.stringify(patientConditions),
+            patientId: patientId,
+          },
+        },
+      }),
       ...(!patientAssistantId && {
         assistantOverrides: {
           voice: {
@@ -58,6 +79,15 @@ router.post('/call-now', async (req: Request, res: Response) => {
             voiceId: (patient as Patient).voice_choice, // Fallback to voice ID if assistant ID not available
           },
           firstMessage: `Hello ${(patient as Patient).name}, this is RetroCare calling to check in on you.`,
+          variableValues: {
+            patientName: (patient as Patient).name,
+            patientAge: String((patient as Patient).age || ''),
+            medications: patientMeds.join(', '),
+            medicationsList: JSON.stringify(patientMeds),
+            conditions: patientConditions.join(', '),
+            conditionsList: JSON.stringify(patientConditions),
+            patientId: patientId,
+          },
         },
       }),
     };

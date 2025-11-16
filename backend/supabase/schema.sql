@@ -37,11 +37,22 @@ create table if not exists call_logs (
   id uuid primary key default gen_random_uuid(),
   patient_id uuid not null references patients(id) on delete cascade,
   timestamp timestamptz not null default now(),
+  assistant_name text, -- Name of the assistant that made the call
+  outcome text check (outcome in ('answered', 'no_answer', 'busy', 'failed', 'voicemail')), -- Call outcome
+  transcript text, -- Full call transcript
   mood text, -- Patient's mood during call
   sleep_quality text, -- Sleep quality reported
+  sleep_hours numeric, -- Hours of sleep
   summary text, -- Call summary/notes
-  flags jsonb default '[]'::jsonb -- Array of flags from the call
+  flags jsonb default '[]'::jsonb, -- Array of flags from the call
+  meds_taken jsonb default '[]'::jsonb, -- Array of medications taken: [{medName: string, taken: boolean, timestamp: string}]
+  sentiment_score numeric, -- Sentiment analysis score (0-1)
+  anomaly_score numeric -- Voice anomaly score (0-1)
 );
+
+-- Indexes for faster queries
+create index if not exists idx_call_logs_outcome on call_logs(outcome);
+create index if not exists idx_call_logs_timestamp on call_logs(timestamp desc);
 
 -- Voice Anomaly Detection Logs
 create table if not exists voice_anomaly_logs (

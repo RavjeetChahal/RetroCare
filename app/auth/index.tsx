@@ -11,29 +11,45 @@ export default function AuthScreen() {
   const { user, isLoaded } = useUser();
 
   // Check if caregiver exists (onboarding complete)
-  const { data: caregiver } = useQuery({
+  // This determines if user should go to dashboard (existing account) or onboarding (new account)
+  const { data: caregiver, isLoading: isLoadingCaregiver, error: caregiverError } = useQuery({
     queryKey: ['caregiver', user?.id],
     queryFn: async () => {
       if (!user?.id) return null;
       try {
-        return await getCaregiverByClerkId(user.id);
-      } catch {
+        const caregiverData = await getCaregiverByClerkId(user.id);
+        // If caregiver exists, they've completed onboarding - they have an account
+        return caregiverData;
+      } catch (error: any) {
+        // If error is "not found" or similar, caregiver doesn't exist (new user)
+        // This is expected for new users - they'll go to onboarding
+        if (error?.code === 'PGRST116' || error?.message?.includes('No rows')) {
+          return null;
+        }
+        // For other errors, log but still return null (will route to onboarding)
+        console.warn('Error checking caregiver:', error);
         return null;
       }
     },
     enabled: !!user?.id && isLoaded,
+    retry: false, // Don't retry if caregiver doesn't exist
   });
 
-  // Redirect signed-in users
+  // Redirect signed-in users based on whether they have an account
   useEffect(() => {
-    if (!isLoaded || !user) return;
+    // Wait for Clerk and caregiver check to complete
+    if (!isLoaded || !user || isLoadingCaregiver) return;
     
+    // If caregiver exists in Supabase = existing account with completed onboarding
+    // Route to dashboard which will load patients from Supabase
     if (caregiver) {
       router.replace('/dashboard');
     } else {
+      // No caregiver found = new user creating account
+      // Route to onboarding to create caregiver and patient records
       router.replace('/onboarding');
     }
-  }, [user, isLoaded, caregiver, router]);
+  }, [user, isLoaded, caregiver, isLoadingCaregiver, router]);
 
   return (
     <View style={styles.container}>

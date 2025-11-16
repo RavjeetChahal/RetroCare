@@ -47,7 +47,20 @@ export function TodaySummary({ patients, callLogs }: TodaySummaryProps) {
             {log.sleep_quality && (
               <View style={styles.infoRow}>
                 <Text style={styles.label}>Sleep:</Text>
-                <Text style={styles.value}>{log.sleep_quality}</Text>
+                <Text style={styles.value}>
+                  {log.sleep_quality}
+                  {log.sleep_hours && ` (${log.sleep_hours} hrs)`}
+                </Text>
+              </View>
+            )}
+            {log.meds_taken && Array.isArray(log.meds_taken) && log.meds_taken.length > 0 && (
+              <View style={styles.infoRow}>
+                <Text style={styles.label}>Meds:</Text>
+                <Text style={styles.value}>
+                  {log.meds_taken
+                    .map((med: any) => `${med.medName} ${med.taken ? '✓' : '✗'}`)
+                    .join(', ')}
+                </Text>
               </View>
             )}
             {log.flags && Array.isArray(log.flags) && log.flags.length > 0 && (

@@ -35,6 +35,7 @@ export interface VAPICallRequest {
       provider: string;
       voiceId: string;
     };
+    variableValues?: Record<string, string>;
   };
 }
 

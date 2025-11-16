@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -21,6 +21,13 @@ import {
 import { getWeekStart, getWeekEnd, getPreviousWeek, getNextWeek } from '../../utils/weekUtils';
 import { TodaySummary } from '../../components/dashboard/TodaySummary';
 import { WeekCalendar } from '../../components/dashboard/WeekCalendar';
+import { PatientHeader } from '../../components/dashboard/PatientHeader';
+import { MoodCard } from '../../components/dashboard/MoodCard';
+import { MedsCard } from '../../components/dashboard/MedsCard';
+import { CallsCard } from '../../components/dashboard/CallsCard';
+import { FlagsCard } from '../../components/dashboard/FlagsCard';
+import { SleepCard } from '../../components/dashboard/SleepCard';
+import { usePatientStore } from '../../hooks/usePatientStore';
 import { colors, spacing } from '../../styles/tokens';
 
 type ViewMode = 'today' | 'week';
@@ -31,6 +38,7 @@ export default function DashboardScreen() {
   const router = useRouter();
   const [viewMode, setViewMode] = useState<ViewMode>('today');
   const [currentWeek, setCurrentWeek] = useState<Date>(new Date());
+  const { setSelectedPatient } = usePatientStore();
 
   // Fetch caregiver ID
   const {
@@ -59,6 +67,14 @@ export default function DashboardScreen() {
     },
     enabled: !!caregiver?.id,
   });
+
+  // Set first patient as default when patients load
+  const { selectedPatient } = usePatientStore();
+  useEffect(() => {
+    if (patients.length > 0 && !selectedPatient) {
+      setSelectedPatient(patients[0]);
+    }
+  }, [patients, selectedPatient, setSelectedPatient]);
 
   // Fetch today's call logs
   const {
@@ -193,6 +209,24 @@ export default function DashboardScreen() {
       contentContainerStyle={styles.contentContainer}
       refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />}
     >
+      {/* Patient Header - Phase 1 */}
+      {patients.length > 0 && <PatientHeader patients={patients} />}
+
+      {/* Mood Card - Phase 2 */}
+      {selectedPatient && <MoodCard />}
+
+      {/* Meds Card - Phase 3 */}
+      {selectedPatient && <MedsCard />}
+
+      {/* Calls Card - Phase 4 */}
+      {selectedPatient && <CallsCard />}
+
+      {/* Flags Card - Phase 5 */}
+      {selectedPatient && <FlagsCard />}
+
+      {/* Sleep Card - Phase 5 */}
+      {selectedPatient && <SleepCard />}
+
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerContent}>

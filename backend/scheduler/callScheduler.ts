@@ -88,6 +88,14 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
       return;
     }
     
+    // Prepare patient context for assistant
+    const patientMeds = Array.isArray(patient.meds) 
+      ? patient.meds.map((m: any) => typeof m === 'string' ? m : m.name || m.medName || String(m)).filter(Boolean)
+      : [];
+    const patientConditions = Array.isArray(patient.conditions)
+      ? patient.conditions.map((c: any) => typeof c === 'string' ? c : c.name || String(c)).filter(Boolean)
+      : [];
+    
     // Build call request with webhook for call-ended events
     const callRequest = {
       phoneNumberId,
@@ -97,6 +105,17 @@ async function makeScheduledCall(patient: Patient): Promise<void> {
       },
       webhook: {
         url: webhookUrl,
+      },
+      assistantOverrides: {
+        variableValues: {
+          patientName: patient.name,
+          patientAge: String(patient.age || ''),
+          medications: patientMeds.join(', '),
+          medicationsList: JSON.stringify(patientMeds),
+          conditions: patientConditions.join(', '),
+          conditionsList: JSON.stringify(patientConditions),
+          patientId: patient.id,
+        },
       },
     };
 
