@@ -25,7 +25,26 @@ const TOTAL_STEPS = 5;
 
 export default function OnboardingScreen() {
   const router = useRouter();
-  const { user } = useUser();
+  const { user, isLoaded: isUserLoaded } = useUser();
+  
+  // Log user loading state for debugging
+  useEffect(() => {
+    console.log('[Onboarding] User state:', {
+      hasUser: !!user,
+      hasUserId: !!user?.id,
+      userId: user?.id,
+      isLoaded: isUserLoaded,
+      userKeys: user ? Object.keys(user) : [],
+    });
+  }, [user, isUserLoaded]);
+  
+  // Redirect to auth if not signed in (after Clerk loads)
+  useEffect(() => {
+    if (isUserLoaded && !user) {
+      console.log('[Onboarding] User not signed in, redirecting to /auth');
+      router.replace('/auth');
+    }
+  }, [isUserLoaded, user, router]);
   const {
     step,
     caregiver,
@@ -67,6 +86,15 @@ export default function OnboardingScreen() {
       if (!user?.id) {
         throw new Error('Clerk user is not available.');
       }
+      
+      console.log('[Onboarding] Submitting data:', {
+        clerkId: user.id,
+        caregiver: { name: caregiver.name, phone: caregiver.phone, timezone: caregiver.timezone },
+        patient: { name: patient.name, age: patient.age, phone: patient.phone, timezone: patient.timezone },
+        callSchedule,
+        voiceChoice,
+      });
+      
       return saveOnboarding({
         clerkId: user.id,
         caregiver,
@@ -76,8 +104,19 @@ export default function OnboardingScreen() {
       });
     },
     onSuccess: () => {
+      console.log('[Onboarding] Success! Redirecting to dashboard...');
       reset();
       router.replace('/dashboard');
+    },
+    onError: (error: any) => {
+      console.error('[Onboarding] Error submitting:', error);
+      console.error('[Onboarding] Error details:', {
+        message: error.message,
+        code: error.code,
+        details: error.details,
+        hint: error.hint,
+        response: error.response,
+      });
     },
   });
 
@@ -93,6 +132,21 @@ export default function OnboardingScreen() {
   );
 
   const canContinue = validations[step];
+  
+  // Debug logging
+  if (step === TOTAL_STEPS - 1) {
+    console.log('[Onboarding] Final step check:', {
+      canContinue,
+      isUserLoaded,
+      hasUser: !!user,
+      hasUserId: !!user?.id,
+      userId: user?.id,
+    });
+  }
+  
+  // For final step, require user to have an ID (more lenient - if user?.id exists, allow submission)
+  // This handles cases where isLoaded might not be available but user is still ready
+  const canSubmit = step === TOTAL_STEPS - 1 ? (canContinue && user?.id) : canContinue;
 
   const handlePrimaryAction = () => {
     if (step < TOTAL_STEPS - 1) {
@@ -101,6 +155,18 @@ export default function OnboardingScreen() {
       }
       return;
     }
+    
+    // Final step - ensure user has an ID before submitting
+    if (!user?.id) {
+      console.error('[Onboarding] Cannot submit: User ID not available', {
+        isUserLoaded,
+        hasUser: !!user,
+        hasUserId: !!user?.id,
+        userId: user?.id,
+      });
+      return;
+    }
+    
     mutation.mutate();
   };
 
@@ -209,6 +275,18 @@ export default function OnboardingScreen() {
     }
   };
 
+  // Show loading state while Clerk is initializing
+  if (!isUserLoaded) {
+    return (
+      <View style={styles.container}>
+        <View style={[styles.content, { justifyContent: 'center', alignItems: 'center' }]}>
+          <ActivityIndicator size="large" color={colors.accent} />
+          <Text style={styles.infoText}>Loading...</Text>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
@@ -217,6 +295,24 @@ export default function OnboardingScreen() {
           <Text style={styles.title}>{STEP_TITLES[step]}</Text>
         </View>
         {renderStep()}
+        {!user?.id && step === TOTAL_STEPS - 1 && (
+          <View style={styles.infoContainer}>
+            <Text style={styles.infoText}>Loading user information...</Text>
+          </View>
+        )}
+        {mutation.isError && (
+          <View style={styles.errorContainer}>
+            <Text style={styles.errorText}>
+              {mutation.error?.message || 'Failed to save. Please check the console for details.'}
+            </Text>
+            {mutation.error?.code && (
+              <Text style={styles.errorSubtext}>Error code: {mutation.error.code}</Text>
+            )}
+            {!user?.id && (
+              <Text style={styles.errorSubtext}>User is still loading. Please wait and try again.</Text>
+            )}
+          </View>
+        )}
       </ScrollView>
       <View style={styles.footer}>
         <Pressable style={[styles.secondaryButton]} onPress={handleSecondaryAction}>
@@ -225,12 +321,14 @@ export default function OnboardingScreen() {
         <Pressable
           style={[
             styles.primaryButton,
-            (!canContinue || mutation.isPending) && step !== TOTAL_STEPS - 1 ? styles.disabledButton : undefined,
+            (!canSubmit || mutation.isPending) ? styles.disabledButton : undefined,
           ]}
           onPress={handlePrimaryAction}
-          disabled={(step < TOTAL_STEPS - 1 && !canContinue) || mutation.isPending}
+          disabled={!canSubmit || mutation.isPending}
         >
           {mutation.isPending ? (
+            <ActivityIndicator color="#0f172a" />
+          ) : !user?.id && step === TOTAL_STEPS - 1 ? (
             <ActivityIndicator color="#0f172a" />
           ) : (
             <Text style={styles.primaryButtonText}>{primaryLabel}</Text>
@@ -416,6 +514,32 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: '#fca5a5',
+  },
+  errorContainer: {
+    backgroundColor: '#7f1d1d',
+    borderColor: '#fca5a5',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginTop: spacing.md,
+    gap: spacing.xs,
+  },
+  errorSubtext: {
+    color: '#fca5a5',
+    fontSize: 12,
+    opacity: 0.8,
+  },
+  infoContainer: {
+    backgroundColor: '#1e3a5f',
+    borderColor: '#60a5fa',
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginTop: spacing.md,
+  },
+  infoText: {
+    color: '#60a5fa',
+    fontSize: 14,
   },
 });
 
