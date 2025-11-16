@@ -4,9 +4,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ClerkProvider, useClerk, useAuth } from '@clerk/clerk-expo';
 import { tokenCache } from '../utils';
-
-// Import GestureHandlerRootView - it's safe to import on all platforms
-// but we'll conditionally use it only on native
+// Import gesture handler - safe to import on all platforms, initialized in index.ts
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 // Component to handle auto-sign-out and cache clearing on app start
@@ -84,16 +82,26 @@ export const AppProviders = ({ children }: PropsWithChildren) => {
     </SafeAreaProvider>
   );
 
+  // Web: Use plain View (gesture handler not needed)
   if (Platform.OS === 'web') {
+    const webStyle = {
+      flex: 1,
+      width: '100%',
+      height: '100%',
+      // @ts-expect-error - web-only CSS property
+      minHeight: '100vh',
+    };
+
     return (
       <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache} afterSignOutUrl="/">
-        <View style={styles.webRoot}>
+        <View style={webStyle}>
           {content}
         </View>
       </ClerkProvider>
     );
   }
 
+  // Native: Use GestureHandlerRootView (already imported at top level)
   return (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache} afterSignOutUrl="/">
       <GestureHandlerRootView style={styles.nativeRoot}>
@@ -106,12 +114,6 @@ export const AppProviders = ({ children }: PropsWithChildren) => {
 const styles = StyleSheet.create({
   nativeRoot: {
     flex: 1,
-  },
-  webRoot: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-    minHeight: '100vh',
   },
 });
 

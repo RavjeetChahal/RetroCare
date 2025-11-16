@@ -10,6 +10,20 @@ services:
         value: production
     healthCheckPath: /health
 
+  # Python Anomaly Detection Service
+  - type: web
+    name: retrocare-python
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootDir: python/anomaly-service
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: CORS_ORIGINS
+        value: https://retrocare.onrender.com,http://localhost:3000
+    healthCheckPath: /health
+
   # Option 2: Frontend + Backend Together (If you prefer one service)
   # Uncomment this and comment out the backend-only service above
   # - type: web

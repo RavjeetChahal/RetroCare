@@ -49,28 +49,50 @@ async def load_audio_from_url(url: str, target_sr: int = 16000) -> Tuple[np.ndar
     Returns:
         Tuple of (waveform, sample_rate)
     """
+    import asyncio
+    
     try:
-        async with aiohttp.ClientSession() as session:
+        # Create timeout for the entire operation (60 seconds)
+        timeout = aiohttp.ClientTimeout(total=60, connect=10)
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            logger.info(f"Downloading audio from: {url}")
             async with session.get(url) as response:
                 if response.status != 200:
                     raise ValueError(f"Failed to download audio: HTTP {response.status}")
                 
+                # Limit audio file size to 50MB to prevent memory issues
+                max_size = 50 * 1024 * 1024  # 50MB
                 audio_bytes = await response.read()
+                
+                if len(audio_bytes) > max_size:
+                    raise ValueError(f"Audio file too large: {len(audio_bytes)} bytes (max {max_size})")
+                
+                logger.info(f"Downloaded {len(audio_bytes)} bytes, loading audio...")
                 audio_io = io.BytesIO(audio_bytes)
                 
-                # Load audio with librosa
+                # Load audio with librosa (limit to 5 minutes of audio to prevent long processing)
+                max_duration = 300  # 5 minutes
                 waveform, sample_rate = librosa.load(
                     audio_io,
                     sr=target_sr,
                     mono=True,
-                    duration=None  # Load full audio
+                    duration=max_duration  # Limit duration to prevent hangs
                 )
                 
-                logger.info(f"Loaded audio: {len(waveform)} samples at {sample_rate} Hz")
+                logger.info(f"Loaded audio: {len(waveform)} samples at {sample_rate} Hz ({len(waveform)/sample_rate:.1f}s)")
                 return waveform, sample_rate
                 
+    except asyncio.TimeoutError:
+        error_msg = f"Timeout downloading audio from {url} (exceeded 60 seconds)"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    except aiohttp.ClientError as e:
+        error_msg = f"Network error downloading audio: {e}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     except Exception as e:
-        logger.error(f"Error loading audio from URL: {e}")
+        logger.error(f"Error loading audio from URL: {e}", exc_info=True)
         raise
 
 
