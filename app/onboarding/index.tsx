@@ -8,7 +8,7 @@ import {
   Pressable,
   ActivityIndicator,
 } from 'react-native';
-import { useUser } from '@clerk/clerk-expo';
+import { useUser, useClerk } from '@clerk/clerk-expo';
 import { useRouter } from 'expo-router';
 import { useMutation } from '@tanstack/react-query';
 import { useOnboardingStore, CaregiverDetails } from '../../hooks/useOnboardingStore';
@@ -26,6 +26,7 @@ const TOTAL_STEPS = 5;
 export default function OnboardingScreen() {
   const router = useRouter();
   const { user, isLoaded: isUserLoaded } = useUser();
+  const { signOut } = useClerk();
   
   // Log user loading state for debugging
   useEffect(() => {
@@ -173,9 +174,17 @@ export default function OnboardingScreen() {
   const primaryLabel = step === TOTAL_STEPS - 1 ? 'Save & Finish' : 'Continue';
   const secondaryLabel = step === 0 ? 'Cancel' : 'Back';
 
-  const handleSecondaryAction = () => {
+  const handleSecondaryAction = async () => {
     if (step === 0) {
-      router.back();
+      // Cancel - sign out and go back to auth page (login/sign up)
+      try {
+        await signOut();
+        router.replace('/auth');
+      } catch (error) {
+        console.error('Error signing out:', error);
+        // Still navigate to auth even if sign out fails
+        router.replace('/auth');
+      }
       return;
     }
     prevStep();

@@ -11,7 +11,9 @@
     "backend:with-frontend": "tsx backend/serverWithFrontend.ts",
     "build:web": "npx expo export --platform web",
     "serve": "npx serve dist -s",
-    "ngrok": "ngrok http 3000"
+    "ngrok": "ngrok http 3000",
+    "test:anomaly": "tsx backend/anomaly/anomalyService.test.ts",
+    "test:anomaly-integration": "tsx scripts/testAnomalyDetection.ts"
   },
   "dependencies": {
     "@clerk/clerk-expo": "^2.19.1",

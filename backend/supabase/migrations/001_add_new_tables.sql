@@ -19,8 +19,8 @@ create table if not exists medications (
 -- Create patient_voice_baseline table
 create table if not exists patient_voice_baseline (
   patient_id uuid primary key references patients(id) on delete cascade,
-  embedding vector(256), -- Using pgvector extension, or float[] if not available
-  embedding_url text, -- URL to stored embedding file
+  embedding text, -- JSON string of embedding vector (array of floats)
+  embedding_url text, -- URL to stored embedding file (optional, for backward compatibility)
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
