@@ -127,10 +127,10 @@ export default function DashboardScreen() {
 
   const handlePatientHistory = () => {
     try {
-      router.push('/patient/history');
+      router.push('/calendar');
     } catch (error) {
-      console.warn('Patient history route unavailable yet', error);
-      alert('Patient history will be available soon.');
+      console.warn('Calendar route unavailable', error);
+      alert('Calendar unavailable.');
     }
   };
 
