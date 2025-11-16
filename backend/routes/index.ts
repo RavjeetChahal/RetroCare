@@ -2,6 +2,7 @@ import { Router } from 'express';
 import callRoutes from './callRoutes';
 import vapiRoutes from './vapiRoutes';
 import anomalyRoutes from '../anomaly/anomalyController';
+import diagnosticsRoutes from './diagnostics';
 
 const router = Router();
 
@@ -10,5 +11,6 @@ const router = Router();
 router.use(callRoutes);
 router.use('/vapi', vapiRoutes);
 router.use(anomalyRoutes);
+router.use('/diagnostics', diagnosticsRoutes);
 
 export default router;

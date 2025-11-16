@@ -1,9 +1,13 @@
 import { PropsWithChildren, useMemo, useEffect, useRef } from 'react';
+import { Platform, View, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ClerkProvider, useClerk, useAuth } from '@clerk/clerk-expo';
 import { tokenCache } from '../utils';
+
+// Import GestureHandlerRootView - it's safe to import on all platforms
+// but we'll conditionally use it only on native
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 // Component to handle auto-sign-out and cache clearing on app start
 function AutoSignOut({ children }: PropsWithChildren) {
@@ -72,16 +76,42 @@ export const AppProviders = ({ children }: PropsWithChildren) => {
     throw new Error('Missing Clerk publishable key. Set VITE_CLERK_PUBLISHABLE_KEY in .env.local');
   }
 
+  const content = (
+    <SafeAreaProvider>
+      <QueryClientProvider client={queryClient}>
+        <AutoSignOut>{children}</AutoSignOut>
+      </QueryClientProvider>
+    </SafeAreaProvider>
+  );
+
+  if (Platform.OS === 'web') {
+    return (
+      <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache} afterSignOutUrl="/">
+        <View style={styles.webRoot}>
+          {content}
+        </View>
+      </ClerkProvider>
+    );
+  }
+
   return (
     <ClerkProvider publishableKey={publishableKey} tokenCache={tokenCache} afterSignOutUrl="/">
-      <GestureHandlerRootView style={{ flex: 1 }}>
-        <SafeAreaProvider>
-          <QueryClientProvider client={queryClient}>
-            <AutoSignOut>{children}</AutoSignOut>
-          </QueryClientProvider>
-        </SafeAreaProvider>
+      <GestureHandlerRootView style={styles.nativeRoot}>
+        {content}
       </GestureHandlerRootView>
     </ClerkProvider>
   );
 };
+
+const styles = StyleSheet.create({
+  nativeRoot: {
+    flex: 1,
+  },
+  webRoot: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    minHeight: '100vh',
+  },
+});
 

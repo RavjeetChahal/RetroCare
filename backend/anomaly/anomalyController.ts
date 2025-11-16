@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../utils/logger';
 import { checkVoiceAnomaly } from './anomalyService';
 import { getAnomalyLogsForPatient } from '../supabase/anomalyLogs';
+import { checkPythonServiceHealth } from './pythonClient';
+import axios from 'axios';
 
 const router = Router();
 
@@ -99,6 +101,65 @@ router.get('/anomaly-logs/:patientId', async (req: Request, res: Response) => {
     logger.error('Error fetching anomaly logs', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
   }
+});
+
+/**
+ * GET /api/python-service-status
+ * Check Python service connectivity (quick diagnostic)
+ */
+router.get('/python-service-status', async (req: Request, res: Response) => {
+  const pythonServiceUrl = process.env.PYTHON_SERVICE_URL || 'http://localhost:8000';
+  
+  const status: any = {
+    configuredUrl: pythonServiceUrl,
+    timestamp: new Date().toISOString(),
+    tests: {},
+  };
+  
+  // Test 1: Health check
+  try {
+    const isHealthy = await checkPythonServiceHealth();
+    status.tests.healthCheck = {
+      status: 'success',
+      isHealthy,
+    };
+  } catch (error: any) {
+    status.tests.healthCheck = {
+      status: 'failed',
+      error: error.message,
+      code: error.code,
+    };
+  }
+  
+  // Test 2: Direct HTTP
+  try {
+    const response = await axios.get(`${pythonServiceUrl}/health`, {
+      timeout: 5000,
+      validateStatus: () => true,
+    });
+    status.tests.directHttp = {
+      status: 'success',
+      statusCode: response.status,
+    };
+  } catch (error: any) {
+    status.tests.directHttp = {
+      status: 'failed',
+      error: error.message,
+      code: error.code,
+    };
+  }
+  
+  // Summary
+  const allPassed = Object.values(status.tests).every((t: any) => t.status === 'success');
+  status.summary = {
+    allTestsPassed: allPassed,
+    status: allPassed ? 'healthy' : 'unhealthy',
+    recommendation: allPassed 
+      ? 'Python service is accessible'
+      : 'Python service is not reachable. Check PYTHON_SERVICE_URL environment variable and ensure service is running.',
+  };
+  
+  res.status(allPassed ? 200 : 503).json(status);
 });
 
 export default router;
