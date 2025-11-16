@@ -20,6 +20,7 @@ import { VOICE_OPTIONS, getVoiceSampleScript } from '../../utils/voices';
 import { useVoicePreview } from '../../hooks/useVoicePreview';
 import { saveOnboarding } from '../../utils/onboardingService';
 import { formatTimeSlot } from '../../utils/timeSlots';
+import { MeteorBackground } from '../../components/ui/MeteorBackground';
 
 const TOTAL_STEPS = 5;
 
@@ -298,7 +299,8 @@ export default function OnboardingScreen() {
 
   return (
     <View style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
+      <MeteorBackground count={40} />
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         <View style={styles.progressHeader}>
           <Text style={styles.progressLabel}>Step {step + 1} of {TOTAL_STEPS}</Text>
           <Text style={styles.title}>{STEP_TITLES[step]}</Text>
@@ -423,6 +425,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
+    position: 'relative',
+  },
+  scroll: {
+    zIndex: 1,
   },
   content: {
     padding: spacing.lg,
@@ -485,6 +491,8 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderColor: colors.card,
+    zIndex: 1,
+    backgroundColor: colors.background,
   },
   primaryButton: {
     flex: 1,

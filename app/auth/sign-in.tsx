@@ -11,6 +11,7 @@ import {
 import { useRouter } from 'expo-router';
 import { useSignIn } from '@clerk/clerk-expo';
 import { colors, spacing } from '../../styles/tokens';
+import { MeteorBackground } from '../../components/ui/MeteorBackground';
 
 export default function SignInScreen() {
   const router = useRouter();
@@ -52,33 +53,50 @@ export default function SignInScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={styles.container}
     >
-      <View style={styles.card}>
-        <Text style={styles.title}>Sign in</Text>
-        <TextInput
-          autoCapitalize="none"
-          keyboardType="email-address"
-          placeholder="Email address"
-          placeholderTextColor={colors.textSecondary}
-          style={styles.input}
-          value={email}
-          onChangeText={setEmail}
-        />
-        <TextInput
-          secureTextEntry
-          placeholder="Password"
-          placeholderTextColor={colors.textSecondary}
-          style={styles.input}
-          value={password}
-          onChangeText={setPassword}
-        />
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <Pressable
-          style={[styles.button, !isLoaded ? styles.buttonDisabled : null]}
-          onPress={handleSignIn}
-          disabled={!isLoaded || isSubmitting}
-        >
-          <Text style={styles.buttonText}>{isSubmitting ? 'Signing in...' : 'Continue'}</Text>
-        </Pressable>
+      <MeteorBackground />
+      <View style={styles.content}>
+        <View style={styles.hero}>
+          <Text style={styles.tag}>RetroCare Portal</Text>
+          <Text style={styles.heading}>Welcome back</Text>
+          <Text style={styles.subheading}>
+            Sign in to review patient check-ins, initiate calls, and keep care on track.
+          </Text>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.title}>Sign in</Text>
+          <View style={styles.field}>
+            <Text style={styles.label}>Email</Text>
+            <TextInput
+              autoCapitalize="none"
+              keyboardType="email-address"
+              placeholder="you@retrocare.com"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+            />
+          </View>
+          <View style={styles.field}>
+            <Text style={styles.label}>Password</Text>
+            <TextInput
+              secureTextEntry
+              placeholder="••••••••"
+              placeholderTextColor="rgba(255,255,255,0.4)"
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+            />
+          </View>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+          <Pressable
+            style={[styles.button, !isLoaded ? styles.buttonDisabled : null]}
+            onPress={handleSignIn}
+            disabled={!isLoaded || isSubmitting}
+          >
+            <Text style={styles.buttonText}>{isSubmitting ? 'Signing in...' : 'Continue'}</Text>
+          </Pressable>
+        </View>
       </View>
     </KeyboardAvoidingView>
   );
@@ -87,58 +105,99 @@ export default function SignInScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
-    padding: spacing.lg,
+    backgroundColor: '#030712',
+    position: 'relative',
+  },
+  content: {
+    flex: 1,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xxl,
+    paddingBottom: spacing.xxl,
     justifyContent: 'center',
+    gap: spacing.xl,
+    zIndex: 1,
   },
-  card: {
-    backgroundColor: colors.card,
-    padding: spacing.xl,
-    borderRadius: 20,
-    gap: spacing.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 4,
+  hero: {
+    gap: spacing.sm,
   },
-  title: {
-    fontSize: 28,
+  tag: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    borderRadius: 999,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    color: '#38bdf8',
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+  },
+  heading: {
+    fontSize: 36,
     fontWeight: '700',
     color: colors.textPrimary,
-    letterSpacing: -0.5,
-    marginBottom: spacing.xs,
+    letterSpacing: -0.8,
+  },
+  subheading: {
+    fontSize: 16,
+    color: 'rgba(226,232,240,0.75)',
+    lineHeight: 24,
+  },
+  card: {
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    padding: spacing.xl,
+    borderRadius: 28,
+    gap: spacing.lg,
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+    shadowColor: '#0ea5e9',
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 45,
+    elevation: 12,
+  },
+  title: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    letterSpacing: -0.3,
+  },
+  field: {
+    gap: spacing.xs,
+  },
+  label: {
+    fontSize: 14,
+    color: 'rgba(226,232,240,0.8)',
+    fontWeight: '600',
   },
   input: {
     borderWidth: 1.5,
-    borderColor: '#334155',
-    borderRadius: 12,
-    paddingHorizontal: spacing.md,
+    borderColor: 'rgba(148,163,184,0.35)',
+    borderRadius: 16,
+    paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     color: colors.textPrimary,
     fontSize: 16,
-    backgroundColor: colors.background,
+    backgroundColor: 'rgba(15,23,42,0.6)',
   },
   button: {
     backgroundColor: colors.accent,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: 12,
+    paddingVertical: spacing.lg,
+    borderRadius: 18,
     alignItems: 'center',
     marginTop: spacing.sm,
     shadowColor: colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.35,
+    shadowRadius: 16,
+    elevation: 8,
   },
   buttonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
   },
   buttonText: {
     color: '#0f172a',
     fontWeight: '600',
-    fontSize: 16,
+    fontSize: 17,
   },
   error: {
     color: '#fca5a5',

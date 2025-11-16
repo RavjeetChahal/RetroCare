@@ -1,6 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
 import { CaregiverDetails, PatientDetails } from '../hooks/useOnboardingStore';
 import { getVoiceOptionByAssistantId } from './voices';
+import { getSupabaseClient } from './supabaseClient';
 
 type OnboardingPayload = {
   clerkId: string;
@@ -10,28 +10,17 @@ type OnboardingPayload = {
   voiceChoice: string;
 };
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Onboarding submission will fail.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
-
 export async function saveOnboarding(payload: OnboardingPayload) {
   console.log('[OnboardingService] Starting saveOnboarding...');
   console.log('[OnboardingService] Environment check:', {
-    hasSupabaseUrl: !!supabaseUrl,
-    hasSupabaseKey: !!supabaseAnonKey,
-    supabaseUrl: supabaseUrl ? `${supabaseUrl.substring(0, 30)}...` : 'missing',
+    hasSupabaseUrl: !!process.env.EXPO_PUBLIC_SUPABASE_URL,
+    hasSupabaseKey: !!process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+    supabaseUrl: process.env.EXPO_PUBLIC_SUPABASE_URL
+      ? `${process.env.EXPO_PUBLIC_SUPABASE_URL.substring(0, 30)}...`
+      : 'missing',
   });
 
-  if (!supabaseClient) {
-    const error = 'Supabase client is not configured. Please check EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY environment variables.';
-    console.error('[OnboardingService]', error);
-    throw new Error(error);
-  }
+  const supabaseClient = getSupabaseClient();
 
   const age = Number(payload.patient.age);
   if (Number.isNaN(age)) {

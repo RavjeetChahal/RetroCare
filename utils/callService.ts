@@ -1,14 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
 import type { CallLog } from '../backend/supabase/types';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Call service will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 export type CallStatus = 'picked_up' | 'missed' | 'neutral';
 
@@ -42,9 +33,7 @@ function mapOutcomeToStatus(outcome: CallLog['outcome']): CallStatus {
  * Fetch today's calls for a patient
  */
 export async function fetchTodaysCalls(patientId: string): Promise<CallListItem[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

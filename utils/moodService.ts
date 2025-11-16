@@ -1,13 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Mood service will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 export type Mood = 'happy' | 'neutral' | 'sad';
 
@@ -23,9 +14,7 @@ export interface MoodLog {
  * Fetch today's mood for a patient
  */
 export async function fetchTodaysMood(patientId: string): Promise<MoodLog | null> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -53,9 +42,7 @@ export async function fetchTodaysMood(patientId: string): Promise<MoodLog | null
  * Update or create today's mood for a patient
  */
 export async function updateTodaysMood(patientId: string, mood: Mood): Promise<MoodLog> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

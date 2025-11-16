@@ -1,13 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Sleep service will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 export interface SleepLog {
   id: string;
@@ -28,9 +19,7 @@ export interface SleepData {
  * This combines data from sleep_logs and call_logs/daily_checkins
  */
 export async function fetchTodaysSleep(patientId: string): Promise<SleepData> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

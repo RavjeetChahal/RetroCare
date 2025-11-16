@@ -1,13 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Medication service will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 export interface MedLog {
   id: string;
@@ -29,9 +20,7 @@ export interface MedicationStatus {
  * Fetch today's medication logs for a patient
  */
 export async function fetchTodaysMedLogs(patientId: string): Promise<MedLog[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -57,9 +46,7 @@ export async function fetchTodaysMedLogs(patientId: string): Promise<MedLog[]> {
  * Get patient's medication list from patients table
  */
 export async function fetchPatientMedications(patientId: string): Promise<string[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const { data, error } = await supabaseClient
     .from('patients')
@@ -126,9 +113,7 @@ export async function updateMedicationStatus(
   medName: string,
   taken: boolean
 ): Promise<MedLog> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

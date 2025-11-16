@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useUser, useClerk } from '@clerk/clerk-expo';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
@@ -24,6 +25,7 @@ import { CallsCard } from '../../components/dashboard/CallsCard';
 import { FlagsCard } from '../../components/dashboard/FlagsCard';
 import { SleepCard } from '../../components/dashboard/SleepCard';
 import { usePatientStore } from '../../hooks/usePatientStore';
+import { useRealtimeSync } from '../../hooks/useRealtimeSync';
 import { colors, spacing } from '../../styles/tokens';
 
 export default function DashboardScreen() {
@@ -69,6 +71,14 @@ export default function DashboardScreen() {
       setSelectedPatient(patients[0]);
     }
   }, [patients, selectedPatient, setSelectedPatient]);
+
+  const patientIds = useMemo(() => patients.map((p) => p.id), [patients]);
+
+  useRealtimeSync({
+    caregiverId: caregiver?.id,
+    patientId: selectedPatient?.id,
+    patientIds,
+  });
 
   // Fetch today's call logs
   const {
@@ -146,136 +156,173 @@ export default function DashboardScreen() {
 
   if (caregiverError) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>
-          Error loading dashboard. Please complete onboarding first.
-        </Text>
-        <Pressable style={styles.button} onPress={() => router.push('/onboarding')}>
-          <Text style={styles.buttonText}>Go to Onboarding</Text>
-        </Pressable>
-      </View>
+      <LinearGradient
+        colors={['#030712', '#050d27', '#020617']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.gradient}
+      >
+        <View style={styles.stateWrapper}>
+          <View style={styles.stateCard}>
+            <Text style={styles.stateTitle}>Dashboard unavailable</Text>
+            <Text style={styles.stateText}>
+              Error loading dashboard. Please complete onboarding first.
+            </Text>
+            <Pressable style={styles.button} onPress={() => router.push('/onboarding')}>
+              <Text style={styles.buttonText}>Go to Onboarding</Text>
+            </Pressable>
+          </View>
+        </View>
+      </LinearGradient>
     );
   }
 
   if (isLoading) {
     return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color={colors.accent} />
-        <Text style={styles.loadingText}>Loading dashboard...</Text>
-      </View>
+      <LinearGradient
+        colors={['#030712', '#050d27', '#020617']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.gradient}
+      >
+        <View style={styles.stateWrapper}>
+          <View style={[styles.stateCard, styles.loadingState]}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={styles.loadingText}>Loading dashboard...</Text>
+          </View>
+        </View>
+      </LinearGradient>
     );
   }
 
   if (patients.length === 0) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.emptyTitle}>No Patients</Text>
-        <Text style={styles.emptyText}>
-          You haven't added any patients yet. Complete onboarding to get started.
-        </Text>
-        <Pressable style={styles.button} onPress={() => router.push('/onboarding')}>
-          <Text style={styles.buttonText}>Add Patient</Text>
-        </Pressable>
-      </View>
+      <LinearGradient
+        colors={['#030712', '#050d27', '#020617']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.gradient}
+      >
+        <View style={styles.stateWrapper}>
+          <View style={styles.stateCard}>
+            <Text style={styles.emptyTitle}>No Patients Yet</Text>
+            <Text style={styles.emptyText}>
+              You haven't added any patients yet. Complete onboarding to get started.
+            </Text>
+            <Pressable style={styles.button} onPress={() => router.push('/onboarding')}>
+              <Text style={styles.buttonText}>Add Patient</Text>
+            </Pressable>
+          </View>
+        </View>
+      </LinearGradient>
     );
   }
 
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.contentContainer}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+    <LinearGradient
+      colors={['#030712', '#050d27', '#020617']}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.gradient}
     >
-      {/* Top actions */}
-      <View style={styles.topActions}>
-        <Pressable style={styles.signOutButton} onPress={handleSignOut}>
-          <Text style={styles.signOutText}>Sign Out</Text>
-        </Pressable>
-      </View>
-
-      {/* Patient Header - Phase 1 */}
-      {patients.length > 0 && <PatientHeader patients={patients} />}
-
-      {/* Mood Card - Phase 2 */}
-      {selectedPatient && <MoodCard />}
-
-      {/* Meds Card - Phase 3 */}
-      {selectedPatient && <MedsCard />}
-
-      {/* Calls Card - Phase 4 */}
-      {selectedPatient && <CallsCard />}
-
-      {/* Flags Card - Phase 5 */}
-      {selectedPatient && <FlagsCard />}
-
-      {/* Sleep Card - Phase 5 */}
-      {selectedPatient && <SleepCard />}
-
-      {/* Call Now Button */}
-      <Pressable
-        style={({ pressed }) => [
-          styles.callNowButton,
-          (pressed || isCallActive) && styles.callNowButtonActive,
-        ]}
-        onPress={handleCallNow}
-        disabled={isCallActive}
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.contentContainer}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.callNowText}>{isCallActive ? 'Calling...' : '📞 Call Now'}</Text>
-      </Pressable>
+        <View style={styles.topActions}>
+          <Pressable style={styles.signOutButton} onPress={handleSignOut}>
+            <Text style={styles.signOutText}>Sign Out</Text>
+          </Pressable>
+        </View>
 
-      {/* Patient History Button */}
-      <Pressable style={styles.patientHistoryButton} onPress={handlePatientHistory}>
-        <Text style={styles.patientHistoryText}>Patient History</Text>
-      </Pressable>
-    </ScrollView>
+        {patients.length > 0 && <PatientHeader patients={patients} />}
+
+        {selectedPatient && <MoodCard />}
+
+        {selectedPatient && <MedsCard />}
+
+        {selectedPatient && <CallsCard />}
+
+        {selectedPatient && <FlagsCard />}
+
+        {selectedPatient && <SleepCard />}
+
+        <View style={styles.actionsStack}>
+          <Pressable
+            style={({ pressed }) => [
+              styles.callNowButton,
+              (pressed || isCallActive) && styles.callNowButtonActive,
+            ]}
+            onPress={handleCallNow}
+            disabled={isCallActive}
+          >
+            <Text style={styles.callNowText}>{isCallActive ? 'Calling...' : '📞 Call Now'}</Text>
+          </Pressable>
+
+          <Pressable style={styles.patientHistoryButton} onPress={handlePatientHistory}>
+            <Text style={styles.patientHistoryText}>Patient History</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  gradient: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#020617',
+  },
+  scroll: {
+    flex: 1,
   },
   contentContainer: {
-    padding: spacing.lg,
-    paddingBottom: spacing.xl,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.xxl,
+    gap: spacing.lg,
   },
   topActions: {
     width: '100%',
     alignItems: 'flex-end',
-    marginBottom: spacing.lg,
   },
   signOutButton: {
-    backgroundColor: '#38bdf8',
+    backgroundColor: 'rgba(15,23,42,0.75)',
     paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.xs,
+    paddingVertical: spacing.sm,
     borderRadius: 999,
-    minWidth: 110,
+    minWidth: 130,
     alignItems: 'center',
-    borderWidth: 0,
-    shadowColor: '#38bdf8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 5,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.25)',
+    shadowColor: '#0ea5e9',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
   },
   signOutText: {
-    color: '#0f172a',
+    color: colors.accent,
     fontSize: 14,
     fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  actionsStack: {
+    gap: spacing.md,
+    marginTop: spacing.sm,
   },
   callNowButton: {
     backgroundColor: colors.accent,
     paddingVertical: spacing.lg,
     paddingHorizontal: spacing.lg,
-    borderRadius: 14,
+    borderRadius: 20,
     alignItems: 'center',
-    marginBottom: spacing.md,
     shadowColor: colors.accent,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 20,
+    elevation: 6,
   },
   callNowButtonActive: {
     backgroundColor: '#22c55e',
@@ -287,53 +334,83 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   patientHistoryButton: {
-    borderWidth: 1,
-    borderColor: colors.accent,
+    borderWidth: 1.5,
+    borderColor: 'rgba(56,189,248,0.4)',
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.lg,
-    borderRadius: 14,
+    borderRadius: 18,
     alignItems: 'center',
-    marginBottom: spacing.xl,
-    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
   },
   patientHistoryText: {
     color: colors.accent,
     fontSize: 16,
     fontWeight: '600',
-    letterSpacing: 0.2,
+    letterSpacing: 0.3,
   },
   loadingText: {
     color: colors.textSecondary,
-    marginTop: spacing.md,
+    fontSize: 16,
     textAlign: 'center',
-  },
-  errorText: {
-    color: colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: spacing.md,
   },
   emptyTitle: {
     fontSize: 24,
     fontWeight: '700',
     color: colors.textPrimary,
     textAlign: 'center',
-    marginBottom: spacing.sm,
   },
   emptyText: {
     color: colors.textSecondary,
     textAlign: 'center',
-    marginBottom: spacing.lg,
+  },
+  stateWrapper: {
+    flex: 1,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xl,
+    paddingBottom: spacing.xxl,
+    justifyContent: 'center',
+  },
+  stateCard: {
+    backgroundColor: 'rgba(15, 23, 42, 0.82)',
+    borderRadius: 28,
+    padding: spacing.xl,
+    gap: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.2)',
+    shadowColor: '#0ea5e9',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.2,
+    shadowRadius: 30,
+  },
+  loadingState: {
+    alignItems: 'center',
+  },
+  stateTitle: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  stateText: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
   },
   button: {
     backgroundColor: colors.accent,
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: 12,
+    borderRadius: 18,
     alignItems: 'center',
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
   },
   buttonText: {
     color: '#0f172a',
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
+    letterSpacing: 0.3,
   },
 });

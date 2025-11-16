@@ -1,22 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
 import type { Patient, CallLog } from '../backend/supabase/types';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Dashboard will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 /**
  * Get caregiver ID from Clerk user ID
  */
 export async function getCaregiverByClerkId(clerkId: string) {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const { data, error } = await supabaseClient
     .from('caregivers')
@@ -35,9 +24,7 @@ export async function getCaregiverByClerkId(clerkId: string) {
  * Fetch all patients for a caregiver
  */
 export async function fetchPatientsForCaregiver(caregiverId: string): Promise<Patient[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const { data, error } = await supabaseClient
     .from('patients')
@@ -56,9 +43,7 @@ export async function fetchPatientsForCaregiver(caregiverId: string): Promise<Pa
  * Fetch call logs for a patient
  */
 export async function fetchCallLogsForPatient(patientId: string): Promise<CallLog[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const { data, error } = await supabaseClient
     .from('call_logs')
@@ -81,10 +66,11 @@ export async function fetchCallLogsForPatients(
   startDate: Date,
   endDate: Date,
 ): Promise<CallLog[]> {
-  if (!supabaseClient || patientIds.length === 0) {
+  if (patientIds.length === 0) {
     return [];
   }
 
+  const supabaseClient = getSupabaseClient();
   const { data, error } = await supabaseClient
     .from('call_logs')
     .select('*')

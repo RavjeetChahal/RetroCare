@@ -1,13 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
-
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Supabase environment variables missing. Flag service will not work.');
-}
-
-const supabaseClient = supabaseUrl && supabaseAnonKey ? createClient(supabaseUrl, supabaseAnonKey) : null;
+import { getSupabaseClient } from './supabaseClient';
 
 export type FlagType = 'fall' | 'med_missed' | 'other';
 export type FlagSeverity = 'red' | 'yellow';
@@ -25,9 +16,7 @@ export interface Flag {
  * Fetch today's flags for a patient
  */
 export async function fetchTodaysFlags(patientId: string): Promise<Flag[]> {
-  if (!supabaseClient) {
-    throw new Error('Supabase client is not configured.');
-  }
+  const supabaseClient = getSupabaseClient();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
