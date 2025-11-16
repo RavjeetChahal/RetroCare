@@ -887,11 +887,12 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         for (const pattern of patterns) {
           if (pattern.test(textToSearch)) {
             foundPattern = pattern;
-            logger.info('💊 [WEBHOOK] Pattern matched for medication', {
+            logger.info('💊 [WEBHOOK] ✅ Pattern matched for medication', {
               callId,
               patientId: patient.id,
               medName,
               pattern: pattern.toString(),
+              matchIndex: textToSearch.search(pattern),
               textSnippet: textToSearch.substring(Math.max(0, textToSearch.search(pattern) - 50), textToSearch.search(pattern) + 100),
             });
             break; // Use first match
@@ -976,16 +977,16 @@ router.post('/call-ended', async (req: Request, res: Response) => {
               medName: medNameToStore,
               source: 'summary/transcript',
             });
+          } else {
+            // Log when no pattern matches for debugging
+            logger.info('💊 [WEBHOOK] No pattern matched for medication', {
+              callId,
+              patientId: patient.id,
+              medName,
+              textToSearch: textToSearch.substring(0, 500), // First 500 chars for debugging
+              patientMedNames,
+            });
           }
-        } else {
-          // Log when no pattern matches for debugging
-          logger.info('💊 [WEBHOOK] No pattern matched for medication', {
-            callId,
-            patientId: patient.id,
-            medName,
-            textToSearch: textToSearch.substring(0, 500), // First 500 chars for debugging
-            patientMedNames,
-          });
         }
       }
       
