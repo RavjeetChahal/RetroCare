@@ -23,6 +23,7 @@ interface VAPIWebhookPayload {
   call?: {
     id: string;
     status: string;
+    endedReason?: string;
     customer?: {
       number: string;
     };
@@ -44,6 +45,22 @@ interface VAPIWebhookPayload {
     content?: string;
   };
 }
+
+const GRACEFUL_CALL_ENDINGS = new Set([
+  'completed',
+  'assistant_hangup',
+  'assistant-hangup',
+  'assistant hangup',
+  'user_hangup',
+  'user-hangup',
+  'user hangup',
+  'hangup',
+  'cancelled',
+  'canceled',
+  'call_completed',
+  'call-completed',
+  'call completed',
+]);
 
 type RawToolCallPayload = {
   id?: string;
@@ -212,6 +229,20 @@ function resolvePatientIdFromSources(...sources: Array<Record<string, unknown> |
   return undefined;
 }
 
+function resolveCallEndReason(callData?: Record<string, unknown>, messagePayload?: Record<string, unknown>): string | undefined {
+  return coalesce(
+    callData?.endedReason as string | undefined,
+    callData?.endReason as string | undefined,
+    callData?.ended_reason as string | undefined,
+    callData?.hangupReason as string | undefined,
+    callData?.hangup_reason as string | undefined,
+    messagePayload?.endedReason as string | undefined,
+    messagePayload?.endReason as string | undefined,
+    messagePayload?.hangupReason as string | undefined,
+    messagePayload?.hangup_reason as string | undefined,
+  );
+}
+
 /**
  * POST /api/vapi/call-ended
  * Webhook endpoint for VAPI call-ended events
@@ -226,14 +257,17 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     
     const callStatus = callData?.status;
     const normalizedStatus = callStatus ? String(callStatus).toLowerCase() : undefined;
+    const callEndedReason = resolveCallEndReason(callData, messagePayload);
+    const normalizedReason = callEndedReason ? String(callEndedReason).toLowerCase() : undefined;
     const messageType = messagePayload?.type ? String(messagePayload.type).toLowerCase() : undefined;
-    const isEndedStatus = !normalizedStatus || ['ended', 'completed', 'finished'].includes(normalizedStatus);
+    const isEndedStatus = !normalizedStatus || normalizedStatus === 'ended' || GRACEFUL_CALL_ENDINGS.has(normalizedStatus);
     const isCallEvent = messageType ? messageType.includes('call') : false;
     
     logger.info('📞 [WEBHOOK] Received VAPI call-ended webhook', {
       timestamp: new Date().toISOString(),
       callId: callData?.id,
       status: callData?.status,
+      endedReason: callEndedReason,
       customerNumber: callData?.customer?.number || messagePayload?.customer?.number || messagePayload?.phoneNumber?.number,
       assistantId: callData?.assistantId || messagePayload?.assistantId || messagePayload?.assistant?.id,
       hasTranscript: !!callData?.transcript,
@@ -259,6 +293,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       logger.info('⚠️ [WEBHOOK] Webhook ignored - call not ended yet', {
         callId: callData?.id,
         status: callData?.status,
+        endedReason: callEndedReason,
         messageType,
       });
       return res.status(200).json({ received: true, note: 'Call not marked as ended yet' });
@@ -271,11 +306,16 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const recordingUrl = callData.recordingUrl || callData.recording?.url;
     const summary = callData.summary || '';
     const toolCalls = normalizedToolCalls;
+    const callEndedGracefully = (normalizedStatus && GRACEFUL_CALL_ENDINGS.has(normalizedStatus)) || (normalizedReason && GRACEFUL_CALL_ENDINGS.has(normalizedReason));
+    const callAnswered = transcript.length > 0 || toolCalls.length > 0 || summary.trim().length > 0 || callEndedGracefully;
     
     logger.info('📞 [WEBHOOK] Processing call-ended webhook', {
       callId,
       customerNumber,
       assistantId,
+      status: callStatus,
+      endedReason: callEndedReason,
+      callAnswered,
       transcriptLength: transcript.length,
       transcriptPreview: transcript.substring(0, 200),
       toolCallsCount: toolCalls.length,
@@ -345,7 +385,6 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const assistantName = assistant?.name || 'Unknown';
     
     // Determine call outcome
-    const callAnswered = transcript.length > 0;
     const outcome: CallLog['outcome'] = callAnswered
       ? 'answered'
       : 'no_answer';

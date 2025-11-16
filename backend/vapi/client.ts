@@ -2,6 +2,31 @@ import axios from 'axios';
 import { logger } from '../utils/logger';
 
 const VAPI_BASE_URL = 'https://api.vapi.ai';
+const ACTIVE_CALL_STATUSES = new Set([
+  'initiated',
+  'initializing',
+  'in_progress',
+  'in-progress',
+  'running',
+  'queued',
+  'ringing',
+]);
+
+const GRACEFUL_END_REASONS = new Set([
+  'completed',
+  'assistant_hangup',
+  'assistant-hangup',
+  'assistant hangup',
+  'user_hangup',
+  'user-hangup',
+  'user hangup',
+  'hangup',
+  'cancelled',
+  'canceled',
+  'call_completed',
+  'call-completed',
+  'call completed',
+]);
 
 /**
  * Get VAPI API key from environment
@@ -121,15 +146,23 @@ export async function makeCallWithRetry(
 
       const normalizedStatus = status.status ? String(status.status).toLowerCase() : undefined;
       const normalizedReason = status.endedReason ? String(status.endedReason).toLowerCase() : undefined;
-      const activeStatuses = new Set(['initiated', 'initializing', 'in_progress', 'in-progress', 'running', 'queued', 'ringing']);
+      const isGracefulReason = normalizedReason ? GRACEFUL_END_REASONS.has(normalizedReason) : false;
+      const isGracefulStatus = normalizedStatus ? GRACEFUL_END_REASONS.has(normalizedStatus) : false;
+      const isActiveStatus = normalizedStatus ? ACTIVE_CALL_STATUSES.has(normalizedStatus) : true;
 
-      // Check if call was answered (not voicemail)
-      if (normalizedStatus === 'ended' && normalizedReason !== 'voicemail') {
-        logger.info('VAPI call successful', { callId: response.id, attempt });
+      // Voicemail is the only intentional retry scenario
+      if (normalizedReason === 'voicemail') {
+        logger.warn('Call went to voicemail, will retry', { callId: response.id, attempt });
+        lastError = 'voicemail';
+      } else if (isGracefulReason || isGracefulStatus || (normalizedStatus === 'ended' && !normalizedReason)) {
+        logger.info('VAPI call completed gracefully', {
+          callId: response.id,
+          attempt,
+          status: status.status,
+          endedReason: status.endedReason,
+        });
         return { success: true, callId: response.id };
-      }
-
-      if (!normalizedStatus || activeStatuses.has(normalizedStatus)) {
+      } else if (!normalizedStatus || isActiveStatus) {
         logger.info('VAPI call still active, assuming success', {
           callId: response.id,
           attempt,
@@ -137,14 +170,13 @@ export async function makeCallWithRetry(
           endedReason: status.endedReason,
         });
         return { success: true, callId: response.id };
-      }
-
-      if (normalizedReason === 'voicemail') {
-        logger.warn('Call went to voicemail, will retry', { callId: response.id, attempt });
-        lastError = 'voicemail';
       } else {
-        logger.warn('Call ended unexpectedly', { callId: response.id, status: status.status });
-        lastError = status.endedReason || 'unknown';
+        logger.warn('Call ended unexpectedly', {
+          callId: response.id,
+          status: status.status,
+          endedReason: status.endedReason,
+        });
+        lastError = status.endedReason || normalizedStatus || 'unknown';
       }
     } catch (error: any) {
       logger.error(`VAPI call attempt ${attempt} failed`, error.message);
