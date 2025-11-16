@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 import { logger } from './utils/logger';
 import routes from './routes';
 import { startScheduler } from './scheduler';
@@ -63,8 +64,28 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// API routes
+// API routes (must come before static file serving)
 app.use(routes);
+
+// Serve static frontend files (if dist folder exists from Expo export)
+const frontendPath = path.resolve(process.cwd(), 'dist');
+const frontendExists = fs.existsSync(frontendPath);
+
+if (frontendExists) {
+  logger.info(`Serving frontend from: ${frontendPath}`);
+  app.use(express.static(frontendPath));
+  
+  // Fallback to index.html for client-side routing (SPA)
+  app.get('*', (req, res) => {
+    // Don't serve index.html for API routes
+    if (req.path.startsWith('/api')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(path.join(frontendPath, 'index.html'));
+  });
+} else {
+  logger.info('Frontend dist folder not found - serving API only');
+}
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -74,7 +95,11 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 
 // Start server
 app.listen(PORT, () => {
-  logger.info(`RetroCare backend server running on port ${PORT}`);
+  logger.info(`RetroCare server running on port ${PORT}`);
+  if (frontendExists) {
+    logger.info('✓ Frontend is being served');
+  }
+  logger.info('✓ API routes available at /api/*');
   
   // Start the call scheduler
   startScheduler();
