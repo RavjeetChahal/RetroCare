@@ -32,45 +32,107 @@ export async function routeToolCall(
   context: ToolContext
 ): Promise<{ success: boolean; result?: unknown; error?: string }> {
   const { name, parameters } = toolCall;
+  const routeStartTime = Date.now();
   
-  logger.info('Routing VAPI tool call', {
+  logger.info('🔀 [TOOL ROUTER] Routing VAPI tool call', {
     toolName: name,
     patientId: context.patientId,
     callId: context.callId,
+    assistantName: context.assistantName,
+    timestamp: context.timestamp,
+    parameterKeys: Object.keys(parameters || {}),
+    parameterCount: Object.keys(parameters || {}).length,
+    parameters: JSON.stringify(parameters, null, 2),
   });
   
   try {
+    let result: { success: boolean; result?: unknown; error?: string };
+    
     switch (name) {
       case 'storeDailyCheckIn':
-        return await storeDailyCheckIn(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to storeDailyCheckIn', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await storeDailyCheckIn(parameters, context);
+        break;
       
       case 'updateFlags':
-        return await updateFlags(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to updateFlags', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await updateFlags(parameters, context);
+        break;
       
       case 'markMedicationStatus':
-        return await markMedicationStatus(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to markMedicationStatus', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await markMedicationStatus(parameters, context);
+        break;
       
       case 'logCallAttempt':
-        return await logCallAttempt(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to logCallAttempt', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await logCallAttempt(parameters, context);
+        break;
       
       case 'notifyCaregiver':
-        return await notifyCaregiver(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to notifyCaregiver', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await notifyCaregiver(parameters, context);
+        break;
       
       case 'checkVoiceAnomaly':
-        return await checkVoiceAnomaly(parameters, context);
+        logger.info('🔀 [TOOL ROUTER] Routing to checkVoiceAnomaly', {
+          toolName: name,
+          patientId: context.patientId,
+        });
+        result = await checkVoiceAnomaly(parameters, context);
+        break;
       
       default:
-        logger.warn('Unknown VAPI tool', { toolName: name });
+        logger.warn('⚠️ [TOOL ROUTER] Unknown VAPI tool', { 
+          toolName: name,
+          patientId: context.patientId,
+          availableTools: ['storeDailyCheckIn', 'updateFlags', 'markMedicationStatus', 'logCallAttempt', 'notifyCaregiver', 'checkVoiceAnomaly'],
+        });
         return {
           success: false,
           error: `Unknown tool: ${name}`,
         };
     }
+    
+    const routeDuration = Date.now() - routeStartTime;
+    
+    logger.info('🔀 [TOOL ROUTER] Tool call routed successfully', {
+      toolName: name,
+      patientId: context.patientId,
+      callId: context.callId,
+      success: result.success,
+      hasResult: !!result.result,
+      hasError: !!result.error,
+      error: result.error,
+      resultPreview: result.result ? JSON.stringify(result.result).substring(0, 200) : null,
+      durationMs: routeDuration,
+    });
+    
+    return result;
   } catch (error: any) {
-    logger.error('Error routing tool call', {
+    const routeDuration = Date.now() - routeStartTime;
+    logger.error('❌ [TOOL ROUTER] Error routing tool call', {
       toolName: name,
       error: error.message,
+      stack: error.stack,
       patientId: context.patientId,
+      callId: context.callId,
+      durationMs: routeDuration,
     });
     return {
       success: false,

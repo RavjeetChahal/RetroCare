@@ -50,22 +50,31 @@ interface VAPIWebhookPayload {
  * Webhook endpoint for VAPI call-ended events
  */
 router.post('/call-ended', async (req: Request, res: Response) => {
+  const webhookStartTime = Date.now();
   try {
     const payload: VAPIWebhookPayload = req.body;
     
-    logger.info('Received VAPI webhook', {
+    logger.info('📞 [WEBHOOK] Received VAPI call-ended webhook', {
+      timestamp: new Date().toISOString(),
       callId: payload.call?.id,
       status: payload.call?.status,
       customerNumber: payload.call?.customer?.number,
+      assistantId: payload.call?.assistantId,
       hasTranscript: !!payload.call?.transcript,
       transcriptLength: payload.call?.transcript?.length || 0,
       toolCallsCount: payload.call?.toolCalls?.length || 0,
+      hasSummary: !!payload.call?.summary,
+      summaryLength: payload.call?.summary?.length || 0,
+      hasRecordingUrl: !!(payload.call?.recordingUrl || payload.call?.recording?.url),
+      payloadKeys: Object.keys(payload || {}),
+      callKeys: payload.call ? Object.keys(payload.call) : [],
     });
     
     if (!payload.call || payload.call.status !== 'ended') {
-      logger.info('Webhook ignored - call not ended', {
+      logger.info('⚠️ [WEBHOOK] Webhook ignored - call not ended', {
         callId: payload.call?.id,
         status: payload.call?.status,
+        hasCall: !!payload.call,
       });
       return res.status(200).json({ received: true });
     }
@@ -78,24 +87,43 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const summary = payload.call.summary || '';
     const toolCalls = payload.call.toolCalls || [];
     
-    logger.info('Processing webhook for call', {
+    logger.info('📞 [WEBHOOK] Processing call-ended webhook', {
       callId,
       customerNumber,
       assistantId,
       transcriptLength: transcript.length,
+      transcriptPreview: transcript.substring(0, 200),
       toolCallsCount: toolCalls.length,
+      toolCallNames: toolCalls.map(tc => tc.name),
       hasSummary: !!summary,
+      summaryPreview: summary.substring(0, 200),
+      hasRecordingUrl: !!recordingUrl,
     });
     
     // Find patient by phone number
     // Note: Multiple patients can have the same phone number, so we get all matches
     // and use the most recently created one (most likely the correct one)
+    logger.info('🔍 [WEBHOOK] Looking up patient by phone number', {
+      callId,
+      customerNumber,
+    });
+    
     const supabase = getSupabaseClient();
     const { data: patients, error: patientError } = await supabase
       .from('patients')
       .select('*')
       .eq('phone', customerNumber)
       .order('created_at', { ascending: false });
+    
+    logger.info('🔍 [WEBHOOK] Patient lookup result', {
+      callId,
+      customerNumber,
+      patientCount: patients?.length || 0,
+      hasError: !!patientError,
+      error: patientError?.message,
+      patientIds: patients?.map(p => p.id) || [],
+      patientNames: patients?.map(p => p.name) || [],
+    });
     
     if (patientError) {
       logger.error('Error finding patient for webhook', {
@@ -156,17 +184,31 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     };
     
     // Process tool calls
-    logger.info('Processing tool calls', {
+    logger.info('🔧 [WEBHOOK] Processing tool calls from webhook', {
       callId,
+      patientId: patient.id,
+      patientName: patient.name,
       toolCallsCount: toolCalls.length,
       toolCallNames: toolCalls.map(tc => tc.name),
+      toolCallsDetails: toolCalls.map(tc => ({
+        name: tc.name,
+        parameterKeys: Object.keys(tc.parameters || {}),
+        hasResult: !!tc.result,
+      })),
     });
     
-    for (const toolCall of toolCalls) {
-      logger.info('Processing tool call', {
+    for (let i = 0; i < toolCalls.length; i++) {
+      const toolCall = toolCalls[i];
+      const toolCallStartTime = Date.now();
+      
+      logger.info(`🔧 [WEBHOOK] Processing tool call ${i + 1}/${toolCalls.length}`, {
         callId,
+        patientId: patient.id,
         toolName: toolCall.name,
-        parameters: JSON.stringify(toolCall.parameters),
+        parameters: JSON.stringify(toolCall.parameters, null, 2),
+        parameterCount: Object.keys(toolCall.parameters || {}).length,
+        hasExistingResult: !!toolCall.result,
+        existingResult: toolCall.result ? JSON.stringify(toolCall.result).substring(0, 200) : null,
       });
       
       const result = await routeToolCall(
@@ -177,72 +219,118 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         context
       );
       
-      logger.info('Tool call result', {
+      const toolCallDuration = Date.now() - toolCallStartTime;
+      
+      logger.info(`🔧 [WEBHOOK] Tool call ${i + 1}/${toolCalls.length} completed`, {
         callId,
+        patientId: patient.id,
         toolName: toolCall.name,
         success: result.success,
         hasResult: !!result.result,
+        resultPreview: result.result ? JSON.stringify(result.result).substring(0, 200) : null,
         error: result.error,
+        durationMs: toolCallDuration,
       });
       
       // Extract data from tool results
       if (toolCall.name === 'markMedicationStatus' && result.result) {
         const medStatus = result.result as { medName: string; taken: boolean; timestamp: string };
         medsTaken.push(medStatus);
-        logger.info('Extracted medication status', {
+        logger.info('💊 [WEBHOOK] Extracted medication status from tool call', {
           callId,
+          patientId: patient.id,
           medName: medStatus.medName,
           taken: medStatus.taken,
+          timestamp: medStatus.timestamp,
+          totalMedsCollected: medsTaken.length,
         });
       }
       
       if (toolCall.name === 'updateFlags' && toolCall.parameters.flags) {
         const newFlags = (toolCall.parameters.flags as unknown[]) || [];
         flags.push(...newFlags.map(f => String(f)));
-        logger.info('Extracted flags', {
+        logger.info('🚩 [WEBHOOK] Extracted flags from tool call', {
           callId,
+          patientId: patient.id,
           flags: newFlags,
+          totalFlagsCollected: flags.length,
         });
       }
       
       // Extract summary from logCallAttempt (highest priority for call summary)
       if (toolCall.name === 'logCallAttempt' && toolCall.parameters.summary) {
         callSummary = String(toolCall.parameters.summary).trim();
-        logger.info('Extracted call summary from logCallAttempt', {
+        logger.info('📝 [WEBHOOK] Extracted call summary from logCallAttempt', {
           callId,
+          patientId: patient.id,
           summary: callSummary,
+          summaryLength: callSummary.length,
         });
       }
       
       if (toolCall.name === 'storeDailyCheckIn') {
-        logger.info('Processing storeDailyCheckIn', {
+        logger.info('📋 [WEBHOOK] Processing storeDailyCheckIn tool call', {
           callId,
+          patientId: patient.id,
           hasSleepHours: !!toolCall.parameters.sleepHours,
+          hasSleep_hours: !!toolCall.parameters.sleep_hours,
           hasSleepQuality: !!toolCall.parameters.sleepQuality,
+          hasSleep_quality: !!toolCall.parameters.sleep_quality,
           hasSummary: !!toolCall.parameters.summary,
+          hasMood: !!toolCall.parameters.mood,
+          hasFlags: !!toolCall.parameters.flags,
+          allParameterKeys: Object.keys(toolCall.parameters || {}),
         });
         
-        if (toolCall.parameters.sleepHours) {
-          sleepHours = Number(toolCall.parameters.sleepHours);
-          logger.info('Extracted sleep hours', { callId, sleepHours });
+        if (toolCall.parameters.sleepHours || toolCall.parameters.sleep_hours) {
+          sleepHours = Number(toolCall.parameters.sleepHours || toolCall.parameters.sleep_hours);
+          logger.info('😴 [WEBHOOK] Extracted sleep hours', { 
+            callId, 
+            patientId: patient.id,
+            sleepHours,
+            source: toolCall.parameters.sleepHours ? 'sleepHours' : 'sleep_hours',
+          });
         }
-        if (toolCall.parameters.sleepQuality) {
-          sleepQuality = String(toolCall.parameters.sleepQuality);
-          logger.info('Extracted sleep quality', { callId, sleepQuality });
+        if (toolCall.parameters.sleepQuality || toolCall.parameters.sleep_quality) {
+          sleepQuality = String(toolCall.parameters.sleepQuality || toolCall.parameters.sleep_quality);
+          logger.info('😴 [WEBHOOK] Extracted sleep quality', { 
+            callId, 
+            patientId: patient.id,
+            sleepQuality,
+            source: toolCall.parameters.sleepQuality ? 'sleepQuality' : 'sleep_quality',
+          });
         }
         if (toolCall.parameters.summary) {
           dailySummary = String(toolCall.parameters.summary).trim();
           // Use dailySummary as callSummary if no callSummary from logCallAttempt
           if (!callSummary) {
             callSummary = dailySummary;
-            logger.info('Using dailySummary as call summary', {
+            logger.info('📝 [WEBHOOK] Using dailySummary as call summary', {
               callId,
+              patientId: patient.id,
               summary: callSummary,
+              summaryLength: callSummary.length,
             });
           }
         }
       }
     }
+    
+    logger.info('📊 [WEBHOOK] Tool call processing summary', {
+      callId,
+      patientId: patient.id,
+      totalToolCalls: toolCalls.length,
+      medsTakenCount: medsTaken.length,
+      medsTaken: medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`),
+      flagsCount: flags.length,
+      flags: flags,
+      sleepHours,
+      sleepQuality,
+      hasCallSummary: !!callSummary,
+      callSummaryPreview: callSummary?.substring(0, 200),
+      hasDailySummary: !!dailySummary,
+      dailySummaryPreview: dailySummary?.substring(0, 200),
+    });
     
     logger.info('Tool call processing complete', {
       callId,
@@ -308,11 +396,20 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       sleep_quality: sleepQuality,
     };
     
-    logger.info('Call log data prepared', {
+    logger.info('💾 [WEBHOOK] Call log data prepared', {
       callId,
       patientId: patient.id,
+      patientName: patient.name,
       summary: callSummary,
       summaryLength: callSummary?.length || 0,
+      medsTakenCount: medsTaken.length,
+      flagsCount: flags.length,
+      sleepHours,
+      sleepQuality,
+      mood: moodResult.mood,
+      outcome,
+      hasTranscript: !!transcript,
+      transcriptLength: transcript.length,
     });
     
     // Check if call log already exists (from logCallAttempt tool)
@@ -320,7 +417,17 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const fiveMinutesAgo = new Date(new Date(context.timestamp).getTime() - 5 * 60 * 1000).toISOString();
     const fiveMinutesLater = new Date(new Date(context.timestamp).getTime() + 5 * 60 * 1000).toISOString();
     
-    const { data: existingLogs } = await supabase
+    logger.info('🔍 [WEBHOOK] Checking for existing call log', {
+      callId,
+      patientId: patient.id,
+      timestamp: context.timestamp,
+      searchRange: {
+        from: fiveMinutesAgo,
+        to: fiveMinutesLater,
+      },
+    });
+    
+    const { data: existingLogs, error: existingLogsError } = await supabase
       .from('call_logs')
       .select('*')
       .eq('patient_id', patient.id)
@@ -329,12 +436,36 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       .order('timestamp', { ascending: false })
       .limit(1);
     
+    logger.info('🔍 [WEBHOOK] Existing call log lookup result', {
+      callId,
+      patientId: patient.id,
+      existingLogsCount: existingLogs?.length || 0,
+      hasError: !!existingLogsError,
+      error: existingLogsError?.message,
+      existingLogIds: existingLogs?.map(l => l.id) || [],
+    });
+    
     const existingLog = existingLogs && existingLogs.length > 0 ? existingLogs[0] : null;
     
     let callLogId: string;
     
     if (existingLog) {
+      logger.info('🔄 [WEBHOOK] Updating existing call log', {
+        callId,
+        patientId: patient.id,
+        existingLogId: existingLog.id,
+        existingSummary: existingLog.summary,
+        newSummary: callSummary,
+      });
+      
       // Update existing log
+      logger.info('💾 [WEBHOOK] Attempting to update call_logs', {
+        callId,
+        patientId: patient.id,
+        existingLogId: existingLog.id,
+        dataToUpdate: JSON.stringify(callLogData, null, 2),
+      });
+      
       const { data: updated, error: updateError } = await supabase
         .from('call_logs')
         .update(callLogData)
@@ -342,29 +473,104 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         .select()
         .single();
       
-      if (updateError) throw updateError;
+      if (updateError) {
+        logger.error('❌ [WEBHOOK] Failed to update call log', {
+          callId,
+          patientId: patient.id,
+          existingLogId: existingLog.id,
+          error: updateError.message,
+          errorCode: updateError.code,
+          errorDetails: updateError.details,
+          errorHint: updateError.hint,
+        });
+        throw updateError;
+      }
+      
       callLogId = updated.id;
+      logger.info('✅ [WEBHOOK] Successfully updated call log', {
+        callId,
+        callLogId,
+        patientId: patient.id,
+        updatedSummary: updated.summary,
+        updatedMedsCount: Array.isArray(updated.meds_taken) ? updated.meds_taken.length : 0,
+        updatedFlagsCount: Array.isArray(updated.flags) ? updated.flags.length : 0,
+      });
     } else {
       // Create new log
+      logger.info('💾 [WEBHOOK] Attempting to create new call_logs entry', {
+        callId,
+        patientId: patient.id,
+        dataToInsert: JSON.stringify(callLogData, null, 2),
+      });
+      
       const { data: newLog, error: insertError } = await supabase
         .from('call_logs')
         .insert(callLogData)
         .select()
         .single();
       
-      if (insertError) throw insertError;
+      if (insertError) {
+        logger.error('❌ [WEBHOOK] Failed to create call log', {
+          callId,
+          patientId: patient.id,
+          error: insertError.message,
+          errorCode: insertError.code,
+          errorDetails: insertError.details,
+          errorHint: insertError.hint,
+          dataAttempted: JSON.stringify(callLogData, null, 2),
+        });
+        throw insertError;
+      }
+      
       callLogId = newLog.id;
+      logger.info('✅ [WEBHOOK] Successfully created call log', {
+        callId,
+        callLogId,
+        patientId: patient.id,
+        createdSummary: newLog.summary,
+        createdMedsCount: Array.isArray(newLog.meds_taken) ? newLog.meds_taken.length : 0,
+        createdFlagsCount: Array.isArray(newLog.flags) ? newLog.flags.length : 0,
+      });
     }
     
     // Update patient's last_call_at
-    await supabase
+    logger.info('💾 [WEBHOOK] Updating patient last_call_at', {
+      callId,
+      patientId: patient.id,
+      timestamp: context.timestamp,
+    });
+    
+    const { error: patientUpdateError } = await supabase
       .from('patients')
       .update({ last_call_at: context.timestamp })
       .eq('id', patient.id);
     
+    if (patientUpdateError) {
+      logger.warn('⚠️ [WEBHOOK] Failed to update patient last_call_at', {
+        callId,
+        patientId: patient.id,
+        error: patientUpdateError.message,
+      });
+    } else {
+      logger.info('✅ [WEBHOOK] Updated patient last_call_at', {
+        callId,
+        patientId: patient.id,
+      });
+    }
+    
     // Save data to individual tables (mood_logs, med_logs, flags, sleep_logs)
     // Only save if call was answered and we have data
     if (callAnswered) {
+      logger.info('💾 [WEBHOOK] Starting individual table saves', {
+        callId,
+        patientId: patient.id,
+        callLogId,
+        hasMood: !!moodResult.mood,
+        medsTakenCount: medsTaken.length,
+        flagsCount: flags.length,
+        hasSleepHours: sleepHours !== null && sleepHours !== undefined,
+      });
+      
       // Save mood to mood_logs (if we have a mood)
       if (moodResult.mood) {
         // Map mood from call_logs format (good/neutral/bad) to mood_logs format (happy/neutral/sad)
@@ -375,27 +581,62 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         };
         const moodLogValue = moodMapping[moodResult.mood] || 'neutral';
         
+        logger.info('💾 [WEBHOOK] Saving mood to mood_logs', {
+          callId,
+          patientId: patient.id,
+          callLogId,
+          originalMood: moodResult.mood,
+          mappedMood: moodLogValue,
+        });
+        
         try {
-          const { error: moodError } = await supabase
+          const { data: moodData, error: moodError } = await supabase
             .from('mood_logs')
             .insert({
               patient_id: patient.id,
               mood: moodLogValue,
               timestamp: context.timestamp,
-            });
+            })
+            .select()
+            .single();
           
           if (moodError) {
-            logger.warn('Failed to save mood log', { error: moodError.message, patientId: patient.id });
+            logger.error('❌ [WEBHOOK] Failed to save mood log', { 
+              callId,
+              patientId: patient.id,
+              error: moodError.message,
+              errorCode: moodError.code,
+              errorDetails: moodError.details,
+              moodValue: moodLogValue,
+            });
           } else {
-            logger.info('Saved mood log', { patientId: patient.id, mood: moodLogValue });
+            logger.info('✅ [WEBHOOK] Successfully saved mood log', { 
+              callId,
+              patientId: patient.id,
+              moodLogId: moodData?.id,
+              mood: moodLogValue,
+            });
           }
         } catch (error: any) {
-          logger.warn('Error saving mood log', { error: error.message, patientId: patient.id });
+          logger.error('❌ [WEBHOOK] Exception saving mood log', { 
+            callId,
+            patientId: patient.id,
+            error: error.message,
+            stack: error.stack,
+          });
         }
       }
       
       // Save medications to med_logs
       if (medsTaken && medsTaken.length > 0) {
+        logger.info('💾 [WEBHOOK] Saving medications to med_logs', {
+          callId,
+          patientId: patient.id,
+          callLogId,
+          medsCount: medsTaken.length,
+          meds: medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`),
+        });
+        
         try {
           const medLogEntries = medsTaken.map(med => ({
             patient_id: patient.id,
@@ -405,22 +646,60 @@ router.post('/call-ended', async (req: Request, res: Response) => {
             timestamp: med.timestamp || context.timestamp,
           }));
           
-          const { error: medError } = await supabase
+          logger.info('💾 [WEBHOOK] Prepared med_log entries', {
+            callId,
+            patientId: patient.id,
+            entries: JSON.stringify(medLogEntries, null, 2),
+          });
+          
+          const { data: medData, error: medError } = await supabase
             .from('med_logs')
-            .insert(medLogEntries);
+            .insert(medLogEntries)
+            .select();
           
           if (medError) {
-            logger.warn('Failed to save medication logs', { error: medError.message, patientId: patient.id });
+            logger.error('❌ [WEBHOOK] Failed to save medication logs', { 
+              callId,
+              patientId: patient.id,
+              error: medError.message,
+              errorCode: medError.code,
+              errorDetails: medError.details,
+              entriesAttempted: JSON.stringify(medLogEntries, null, 2),
+            });
           } else {
-            logger.info('Saved medication logs', { patientId: patient.id, count: medLogEntries.length });
+            logger.info('✅ [WEBHOOK] Successfully saved medication logs', { 
+              callId,
+              patientId: patient.id,
+              savedCount: medData?.length || 0,
+              savedIds: medData?.map(m => m.id) || [],
+            });
           }
         } catch (error: any) {
-          logger.warn('Error saving medication logs', { error: error.message, patientId: patient.id });
+          logger.error('❌ [WEBHOOK] Exception saving medication logs', { 
+            callId,
+            patientId: patient.id,
+            error: error.message,
+            stack: error.stack,
+          });
         }
+      } else {
+        logger.info('⏭️ [WEBHOOK] Skipping med_logs save - no medications collected', {
+          callId,
+          patientId: patient.id,
+          medsTakenCount: medsTaken.length,
+        });
       }
       
       // Save flags to flags table
       if (flags && flags.length > 0) {
+        logger.info('💾 [WEBHOOK] Saving flags to flags table', {
+          callId,
+          patientId: patient.id,
+          callLogId,
+          flagsCount: flags.length,
+          rawFlags: flags,
+        });
+        
         try {
           // Map flag strings to flag types and severities
           const flagEntries = flags.map(flag => {
@@ -428,7 +707,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
             let type: 'fall' | 'med_missed' | 'other' = 'other';
             let severity: 'red' | 'yellow' = 'yellow';
             
-            if (flagStr.includes('fall')) {
+            if (flagStr.includes('fall') || flagStr.includes('slip')) {
               type = 'fall';
               severity = 'red';
             } else if (flagStr.includes('med') || flagStr.includes('medication')) {
@@ -444,39 +723,103 @@ router.post('/call-ended', async (req: Request, res: Response) => {
             };
           });
           
-          const { error: flagError } = await supabase
+          logger.info('💾 [WEBHOOK] Prepared flag entries', {
+            callId,
+            patientId: patient.id,
+            entries: JSON.stringify(flagEntries, null, 2),
+          });
+          
+          const { data: flagData, error: flagError } = await supabase
             .from('flags')
-            .insert(flagEntries);
+            .insert(flagEntries)
+            .select();
           
           if (flagError) {
-            logger.warn('Failed to save flags', { error: flagError.message, patientId: patient.id });
+            logger.error('❌ [WEBHOOK] Failed to save flags', { 
+              callId,
+              patientId: patient.id,
+              error: flagError.message,
+              errorCode: flagError.code,
+              errorDetails: flagError.details,
+              entriesAttempted: JSON.stringify(flagEntries, null, 2),
+            });
           } else {
-            logger.info('Saved flags', { patientId: patient.id, count: flagEntries.length });
+            logger.info('✅ [WEBHOOK] Successfully saved flags', { 
+              callId,
+              patientId: patient.id,
+              savedCount: flagData?.length || 0,
+              savedIds: flagData?.map(f => f.id) || [],
+              savedFlags: flagData?.map(f => `${f.type} (${f.severity})`) || [],
+            });
           }
         } catch (error: any) {
-          logger.warn('Error saving flags', { error: error.message, patientId: patient.id });
+          logger.error('❌ [WEBHOOK] Exception saving flags', { 
+            callId,
+            patientId: patient.id,
+            error: error.message,
+            stack: error.stack,
+          });
         }
+      } else {
+        logger.info('⏭️ [WEBHOOK] Skipping flags save - no flags collected', {
+          callId,
+          patientId: patient.id,
+          flagsCount: flags.length,
+        });
       }
       
       // Save sleep to sleep_logs
       if (sleepHours !== null && sleepHours !== undefined) {
+        logger.info('💾 [WEBHOOK] Saving sleep to sleep_logs', {
+          callId,
+          patientId: patient.id,
+          callLogId,
+          sleepHours,
+          sleepQuality,
+        });
+        
         try {
-          const { error: sleepError } = await supabase
+          const { data: sleepData, error: sleepError } = await supabase
             .from('sleep_logs')
             .insert({
               patient_id: patient.id,
               hours: Number(sleepHours),
               timestamp: context.timestamp,
-            });
+            })
+            .select()
+            .single();
           
           if (sleepError) {
-            logger.warn('Failed to save sleep log', { error: sleepError.message, patientId: patient.id });
+            logger.error('❌ [WEBHOOK] Failed to save sleep log', { 
+              callId,
+              patientId: patient.id,
+              error: sleepError.message,
+              errorCode: sleepError.code,
+              errorDetails: sleepError.details,
+              sleepHours,
+            });
           } else {
-            logger.info('Saved sleep log', { patientId: patient.id, hours: sleepHours });
+            logger.info('✅ [WEBHOOK] Successfully saved sleep log', { 
+              callId,
+              patientId: patient.id,
+              sleepLogId: sleepData?.id,
+              hours: sleepHours,
+            });
           }
         } catch (error: any) {
-          logger.warn('Error saving sleep log', { error: error.message, patientId: patient.id });
+          logger.error('❌ [WEBHOOK] Exception saving sleep log', { 
+            callId,
+            patientId: patient.id,
+            error: error.message,
+            stack: error.stack,
+          });
         }
+      } else {
+        logger.info('⏭️ [WEBHOOK] Skipping sleep_logs save - no sleep hours collected', {
+          callId,
+          patientId: patient.id,
+          sleepHours,
+        });
       }
       
       // Aggregate daily check-in (this also saves to daily_checkins table)
@@ -548,16 +891,30 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       }
     }
     
-    logger.info('VAPI webhook processed successfully', {
+    const webhookDuration = Date.now() - webhookStartTime;
+    
+    logger.info('✅ [WEBHOOK] VAPI webhook processed successfully - FINAL SUMMARY', {
       callId,
       patientId: patient.id,
       patientName: patient.name,
-      outcome,
-      mood: moodResult.mood,
-      summary: callSummary,
       callLogId,
+      outcome,
+      callAnswered,
+      mood: moodResult.mood,
+      transcriptLength: transcript.length,
+      summary: callSummary,
+      summaryLength: callSummary?.length || 0,
+      toolCallsProcessed: toolCalls.length,
+      toolCallNames: toolCalls.map(tc => tc.name),
       medsTakenCount: medsTaken.length,
+      medsTaken: medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`),
       flagsCount: flags.length,
+      flags: flags,
+      sleepHours,
+      sleepQuality,
+      hasRecordingUrl: !!recordingUrl,
+      totalDurationMs: webhookDuration,
+      timestamp: new Date().toISOString(),
     });
     
     res.status(200).json({ 
@@ -566,11 +923,19 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       callLogId,
       patientId: patient.id,
       patientName: patient.name,
+      summary: callSummary,
+      medsTakenCount: medsTaken.length,
+      flagsCount: flags.length,
+      sleepHours,
+      sleepQuality,
     });
   } catch (error: any) {
-    logger.error('Error processing VAPI webhook', {
+    const webhookDuration = Date.now() - webhookStartTime;
+    logger.error('❌ [WEBHOOK] Error processing VAPI webhook', {
       error: error.message,
       stack: error.stack,
+      durationMs: webhookDuration,
+      timestamp: new Date().toISOString(),
     });
     // Always return 200 to VAPI to prevent retries
     res.status(200).json({ received: true, error: error.message });
@@ -653,10 +1018,20 @@ router.post('/test-webhook', async (req: Request, res: Response) => {
  * This is called when the assistant uses a tool during a call
  */
 router.post('/tool', async (req: Request, res: Response) => {
+  const requestStartTime = Date.now();
   try {
-    logger.info('Received VAPI tool call', {
-      body: req.body,
-      headers: req.headers,
+    logger.info('🔧 [TOOL ENDPOINT] Received VAPI tool call request', {
+      timestamp: new Date().toISOString(),
+      method: req.method,
+      path: req.path,
+      bodyKeys: Object.keys(req.body || {}),
+      headers: {
+        'content-type': req.headers['content-type'],
+        'user-agent': req.headers['user-agent'],
+        'x-vapi-call-id': req.headers['x-vapi-call-id'],
+        'x-vapi-assistant-id': req.headers['x-vapi-assistant-id'],
+      },
+      rawBody: JSON.stringify(req.body, null, 2),
     });
 
     // VAPI sends tool calls in different formats depending on configuration
@@ -671,23 +1046,53 @@ router.post('/tool', async (req: Request, res: Response) => {
       patientId,
     } = req.body;
 
+    logger.info('🔧 [TOOL ENDPOINT] Parsed request body', {
+      hasName: !!name,
+      hasToolName: !!toolName,
+      hasParameters: !!parameters,
+      hasCallId: !!callId,
+      hasCall: !!call,
+      hasPatientId: !!patientId,
+      parametersKeys: parameters ? Object.keys(parameters) : [],
+      callKeys: call ? Object.keys(call) : [],
+    });
+
     // Determine tool name (could be 'name' or 'toolName')
     const toolCallName = name || toolName;
     
     if (!toolCallName) {
-      logger.error('Tool call missing name', { body: req.body });
+      logger.error('❌ [TOOL ENDPOINT] Tool call missing name', { 
+        body: req.body,
+        availableKeys: Object.keys(req.body || {}),
+      });
       return res.status(400).json({
         success: false,
         error: 'Tool name is required',
       });
     }
 
+    logger.info('🔧 [TOOL ENDPOINT] Tool name identified', {
+      toolName: toolCallName,
+      source: name ? 'name' : 'toolName',
+    });
+
     // Get patientId from parameters or body
     // patientId should be passed via variableValues when making the call
     const resolvedPatientId = patientId || parameters?.patientId;
     
+    logger.info('🔧 [TOOL ENDPOINT] Patient ID resolution', {
+      patientIdFromBody: patientId || 'NOT PROVIDED',
+      patientIdFromParameters: parameters?.patientId || 'NOT PROVIDED',
+      resolvedPatientId: resolvedPatientId || 'NOT RESOLVED',
+      allParameterKeys: parameters ? Object.keys(parameters) : [],
+    });
+    
     if (!resolvedPatientId) {
-      logger.error('Tool call missing patientId', { body: req.body });
+      logger.error('❌ [TOOL ENDPOINT] Tool call missing patientId', { 
+        body: req.body,
+        parameters: parameters,
+        availableKeys: Object.keys(req.body || {}),
+      });
       return res.status(400).json({
         success: false,
         error: 'patientId is required in parameters',
@@ -697,10 +1102,23 @@ router.post('/tool', async (req: Request, res: Response) => {
     // Get callId from body or call object
     const resolvedCallId = callId || call?.id || req.headers['x-vapi-call-id'] || 'unknown';
     
+    logger.info('🔧 [TOOL ENDPOINT] Call ID resolution', {
+      callIdFromBody: callId || 'NOT PROVIDED',
+      callIdFromCall: call?.id || 'NOT PROVIDED',
+      callIdFromHeader: req.headers['x-vapi-call-id'] || 'NOT PROVIDED',
+      resolvedCallId,
+    });
+    
     // Get assistant info if available
     const assistantId = call?.assistantId || req.headers['x-vapi-assistant-id'];
     const assistant = assistantId ? getAssistantById(assistantId) : null;
     const assistantName = assistant?.name || 'Unknown';
+
+    logger.info('🔧 [TOOL ENDPOINT] Assistant info', {
+      assistantId: assistantId || 'NOT PROVIDED',
+      assistantName,
+      assistantFound: !!assistant,
+    });
 
     // Create tool call context
     const toolCall = {
@@ -715,34 +1133,63 @@ router.post('/tool', async (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
     };
 
-    logger.info('Processing tool call', {
+    logger.info('🔧 [TOOL ENDPOINT] Processing tool call', {
       toolName: toolCallName,
       patientId: resolvedPatientId,
       callId: resolvedCallId,
-      parameters: toolCall.parameters,
+      assistantName,
+      parameters: JSON.stringify(toolCall.parameters, null, 2),
+      parameterCount: Object.keys(toolCall.parameters).length,
     });
 
     // Route the tool call
+    const routeStartTime = Date.now();
     const result = await routeToolCall(toolCall, context);
+    const routeDuration = Date.now() - routeStartTime;
+
+    logger.info('🔧 [TOOL ENDPOINT] Tool call routed', {
+      toolName: toolCallName,
+      patientId: resolvedPatientId,
+      callId: resolvedCallId,
+      success: result.success,
+      hasResult: !!result.result,
+      hasError: !!result.error,
+      error: result.error,
+      resultPreview: result.result ? JSON.stringify(result.result).substring(0, 200) : null,
+      routeDurationMs: routeDuration,
+      totalDurationMs: Date.now() - requestStartTime,
+    });
 
     // Return result to VAPI
     // VAPI expects a response with the tool result
     if (result.success) {
+      logger.info('✅ [TOOL ENDPOINT] Tool call succeeded', {
+        toolName: toolCallName,
+        patientId: resolvedPatientId,
+        callId: resolvedCallId,
+      });
       res.json({
         result: result.result,
         success: true,
       });
     } else {
+      logger.error('❌ [TOOL ENDPOINT] Tool call failed', {
+        toolName: toolCallName,
+        patientId: resolvedPatientId,
+        callId: resolvedCallId,
+        error: result.error,
+      });
       res.status(500).json({
         error: result.error || 'Tool execution failed',
         success: false,
       });
     }
   } catch (error: any) {
-    logger.error('Error handling tool call', {
+    logger.error('❌ [TOOL ENDPOINT] Error handling tool call', {
       error: error.message,
       stack: error.stack,
       body: req.body,
+      durationMs: Date.now() - requestStartTime,
     });
     
     res.status(500).json({
