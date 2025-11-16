@@ -180,12 +180,17 @@ export default function PatientScreen() {
                 <Text
                   style={[
                     styles.medName,
-                    med.taken && styles.medNameTaken,
+                    med.taken ? styles.medNameTaken : styles.medNameMissed,
                   ]}
                 >
                   {med.name}
                 </Text>
-                <Text style={[styles.medTime, med.taken && styles.medTimeTaken]}>
+                <Text
+                  style={[
+                    styles.medTime,
+                    med.taken ? styles.medTimeTaken : styles.medTimeMissed,
+                  ]}
+                >
                   {med.time}
                 </Text>
               </View>
@@ -382,15 +387,22 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   medNameTaken: {
-    textDecorationLine: 'line-through',
-    opacity: 0.6,
+    color: '#22c55e',
+    fontWeight: '600',
+  },
+  medNameMissed: {
+    color: '#f87171',
+    fontWeight: '600',
   },
   medTime: {
     fontSize: 14,
     color: colors.textSecondary,
   },
   medTimeTaken: {
-    opacity: 0.6,
+    color: '#22c55e',
+  },
+  medTimeMissed: {
+    color: '#f87171',
   },
   callsContainer: {
     gap: spacing.md,
