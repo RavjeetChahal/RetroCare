@@ -31,17 +31,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Global model loading state
+_model_loading_error = None
+
 # Lifespan event handlers
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup, cleanup on shutdown."""
+    global _model_loading_error
     # Startup
     try:
+        logger.info("Starting voice anomaly detection service...")
         load_model()
-        logger.info("Voice anomaly detection service started")
+        logger.info("Voice anomaly detection service started successfully")
+        _model_loading_error = None
     except Exception as e:
-        logger.error(f"Failed to load model on startup: {e}")
-        raise
+        logger.error(f"Failed to load model on startup: {e}", exc_info=True)
+        _model_loading_error = str(e)
+        # Don't raise - allow service to start but endpoints will return errors
+        logger.warning("Service starting without model - endpoints will fail until model is loaded")
     
     yield
     
@@ -98,10 +106,13 @@ class CompareResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    from utils.audio import _model_loaded
+    
     return {
         "status": "ok",
         "service": "anomaly-detection",
-        "model_loaded": True
+        "model_loaded": _model_loaded,
+        "model_error": _model_loading_error if not _model_loaded else None
     }
 
 
@@ -112,6 +123,13 @@ async def extract_embedding(request: EmbedRequest):
     
     Downloads audio, extracts embedding using ECAPA-TDNN, and computes SNR.
     """
+    from utils.audio import _model_loaded
+    
+    if not _model_loaded:
+        error_msg = f"Model not loaded. Error: {_model_loading_error}" if _model_loading_error else "Model not loaded"
+        logger.error(error_msg)
+        raise HTTPException(status_code=503, detail=error_msg)
+    
     try:
         logger.info(f"Extracting embedding from: {request.audio_url}")
         
@@ -192,11 +210,13 @@ if __name__ == "__main__":
     import uvicorn
     
     port = int(os.getenv("PORT", 8000))
+    # Don't use reload in production - it can cause issues
+    reload = os.getenv("ENVIRONMENT", "production") == "development"
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=port,
-        reload=True,
+        reload=reload,
         log_level="info"
     )
 
