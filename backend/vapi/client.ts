@@ -17,15 +17,53 @@ const GRACEFUL_END_REASONS = new Set([
   'assistant_hangup',
   'assistant-hangup',
   'assistant hangup',
+  'assistant_goodbye',
+  'assistant-goodbye',
   'user_hangup',
   'user-hangup',
   'user hangup',
+  'customer_hangup',
+  'customer-hangup',
+  'customer hangup',
+  'customer_disconnected',
+  'customer disconnected',
+  'patient_hangup',
+  'patient-hangup',
+  'patient hangup',
+  'user_disconnected',
+  'user disconnected',
+  'user_end',
+  'user-ended',
+  'customer_end',
+  'customer-ended',
   'hangup',
   'cancelled',
   'canceled',
   'call_completed',
   'call-completed',
   'call completed',
+]);
+
+const SILENCE_END_REASONS = new Set([
+  'silence_timeout',
+  'silence-timeout',
+  'silence timeout',
+  'silence hangup',
+  'silence_hangup',
+  'silence',
+  'silence disconnect',
+  'silence_disconnect',
+  'auto_disconnect_silence',
+  'auto-disconnect-silence',
+  'no_response',
+  'no-response',
+  'no_response_timeout',
+  'no-response-timeout',
+  'timeout_silence',
+  'silence_timeout_user',
+  'silence_timeout_assistant',
+  'silence_timeout_auto',
+  'silence_timeout_hangup',
 ]);
 
 /**
@@ -148,13 +186,14 @@ export async function makeCallWithRetry(
       const normalizedReason = status.endedReason ? String(status.endedReason).toLowerCase() : undefined;
       const isGracefulReason = normalizedReason ? GRACEFUL_END_REASONS.has(normalizedReason) : false;
       const isGracefulStatus = normalizedStatus ? GRACEFUL_END_REASONS.has(normalizedStatus) : false;
+      const isSilenceReason = normalizedReason ? SILENCE_END_REASONS.has(normalizedReason) : false;
       const isActiveStatus = normalizedStatus ? ACTIVE_CALL_STATUSES.has(normalizedStatus) : true;
 
       // Voicemail is the only intentional retry scenario
       if (normalizedReason === 'voicemail') {
         logger.warn('Call went to voicemail, will retry', { callId: response.id, attempt });
         lastError = 'voicemail';
-      } else if (isGracefulReason || isGracefulStatus || (normalizedStatus === 'ended' && !normalizedReason)) {
+      } else if (isGracefulReason || isGracefulStatus || isSilenceReason || (normalizedStatus === 'ended' && !normalizedReason)) {
         logger.info('VAPI call completed gracefully', {
           callId: response.id,
           attempt,

@@ -51,15 +51,53 @@ const GRACEFUL_CALL_ENDINGS = new Set([
   'assistant_hangup',
   'assistant-hangup',
   'assistant hangup',
+  'assistant_goodbye',
+  'assistant-goodbye',
   'user_hangup',
   'user-hangup',
   'user hangup',
+  'customer_hangup',
+  'customer-hangup',
+  'customer hangup',
+  'customer_disconnected',
+  'customer disconnected',
+  'patient_hangup',
+  'patient-hangup',
+  'patient hangup',
+  'user_disconnected',
+  'user disconnected',
+  'user_end',
+  'user-ended',
+  'customer_end',
+  'customer-ended',
   'hangup',
   'cancelled',
   'canceled',
   'call_completed',
   'call-completed',
   'call completed',
+]);
+
+const SILENCE_CALL_ENDINGS = new Set([
+  'silence_timeout',
+  'silence-timeout',
+  'silence timeout',
+  'silence hangup',
+  'silence_hangup',
+  'silence',
+  'silence disconnect',
+  'silence_disconnect',
+  'auto_disconnect_silence',
+  'auto-disconnect-silence',
+  'no_response',
+  'no-response',
+  'no_response_timeout',
+  'no-response-timeout',
+  'timeout_silence',
+  'silence_timeout_user',
+  'silence_timeout_assistant',
+  'silence_timeout_auto',
+  'silence_timeout_hangup',
 ]);
 
 type RawToolCallPayload = {
@@ -306,8 +344,16 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const recordingUrl = callData.recordingUrl || callData.recording?.url;
     const summary = callData.summary || '';
     const toolCalls = normalizedToolCalls;
+    const callTimestampIso = new Date().toISOString();
     const callEndedGracefully = (normalizedStatus && GRACEFUL_CALL_ENDINGS.has(normalizedStatus)) || (normalizedReason && GRACEFUL_CALL_ENDINGS.has(normalizedReason));
-    const callAnswered = transcript.length > 0 || toolCalls.length > 0 || summary.trim().length > 0 || callEndedGracefully;
+    const callEndedDueToSilence = normalizedReason && SILENCE_CALL_ENDINGS.has(normalizedReason);
+    let callAnswered = transcript.length > 0 || toolCalls.length > 0 || summary.trim().length > 0 || callEndedGracefully || !!callEndedDueToSilence;
+    let medsTaken: Array<{ medName: string; taken: boolean; timestamp: string }> = [];
+    let flags: string[] = [];
+    let sleepHours: number | null = null;
+    let sleepQuality: string | null = null;
+    let callSummary: string | null = null; // Prioritized call summary
+    let dailySummary: string | null = null; // Daily check-in summary
     
     logger.info('📞 [WEBHOOK] Processing call-ended webhook', {
       callId,
@@ -384,27 +430,92 @@ router.post('/call-ended', async (req: Request, res: Response) => {
     const assistant = assistantId ? getAssistantById(assistantId) : null;
     const assistantName = assistant?.name || 'Unknown';
     
+    // Look up recent daily check-in data (if any) to backfill call info
+    const lookbackWindowMinutes = 15;
+    const lookbackWindowStart = new Date(
+      new Date(callTimestampIso).getTime() - lookbackWindowMinutes * 60 * 1000
+    ).toISOString();
+    
+    let recentCheckIn:
+      | {
+          id: string;
+          summary: string | null;
+          sleep_hours: number | null;
+          sleep_quality: string | null;
+          mood: 'good' | 'neutral' | 'bad' | null;
+          flags: unknown[] | null;
+          updated_at: string;
+        }
+      | null = null;
+    
+    const { data: recentCheckIns, error: recentCheckInError } = await supabase
+      .from('daily_checkins')
+      .select('id,summary,sleep_hours,sleep_quality,mood,flags,updated_at')
+      .eq('patient_id', patient.id)
+      .gte('updated_at', lookbackWindowStart)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+    
+    if (recentCheckInError) {
+      logger.warn('⚠️ [WEBHOOK] Failed to fetch recent daily check-in', {
+        callId,
+        patientId: patient.id,
+        error: recentCheckInError.message,
+      });
+    } else if (recentCheckIns && recentCheckIns.length > 0) {
+      recentCheckIn = recentCheckIns[0];
+      logger.info('📋 [WEBHOOK] Recent daily check-in detected', {
+        callId,
+        patientId: patient.id,
+        checkInId: recentCheckIn.id,
+        updatedAt: recentCheckIn.updated_at,
+      });
+      
+      if (!callAnswered) {
+        callAnswered = true;
+        logger.info('📋 [WEBHOOK] Marking call as answered based on check-in activity', {
+          callId,
+          patientId: patient.id,
+          checkInId: recentCheckIn.id,
+        });
+      }
+      
+      if (!dailySummary && recentCheckIn.summary) {
+        dailySummary = recentCheckIn.summary;
+      }
+      if (!callSummary && recentCheckIn.summary) {
+        callSummary = recentCheckIn.summary;
+      }
+      if ((sleepHours === null || sleepHours === undefined) && typeof recentCheckIn.sleep_hours === 'number') {
+        sleepHours = Number(recentCheckIn.sleep_hours);
+      }
+      if (!sleepQuality && recentCheckIn.sleep_quality) {
+        sleepQuality = recentCheckIn.sleep_quality;
+      }
+      if (!flags.length && Array.isArray(recentCheckIn.flags)) {
+        flags = (recentCheckIn.flags as unknown[]).map(flag =>
+          typeof flag === 'string' ? flag : JSON.stringify(flag)
+        );
+      }
+    }
+    
+    const checkInMood = (recentCheckIn?.mood as 'good' | 'neutral' | 'bad' | null) || null;
+    
     // Determine call outcome
     const outcome: CallLog['outcome'] = callAnswered
       ? 'answered'
       : 'no_answer';
     
-    // Compute mood from transcript
+    // Compute mood from transcript (fallback to check-in mood if needed)
     const moodResult = computeMoodFromTranscript(transcript, callAnswered);
-    
-    // Collect data from tool calls
-    let medsTaken: Array<{ medName: string; taken: boolean; timestamp: string }> = [];
-    let flags: string[] = [];
-    let sleepHours: number | null = null;
-    let sleepQuality: string | null = null;
-    let callSummary: string | null = null; // Prioritized call summary
-    let dailySummary: string | null = null; // Daily check-in summary
+    let resolvedMood = moodResult.mood || checkInMood;
+    const resolvedSentimentScore = moodResult.score;
     
     const context = {
       patientId: patient.id,
       callId,
       assistantName,
-      timestamp: new Date().toISOString(),
+      timestamp: callTimestampIso,
     };
     
     // Process tool calls
@@ -540,6 +651,10 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       }
     }
     
+    if (flags.length > 1) {
+      flags = Array.from(new Set(flags));
+    }
+    
     logger.info('📊 [WEBHOOK] Tool call processing summary', {
       callId,
       patientId: patient.id,
@@ -611,8 +726,8 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       assistant_name: assistantName,
       outcome,
       transcript: transcript || null,
-      mood: moodResult.mood,
-      sentiment_score: moodResult.score,
+      mood: resolvedMood,
+      sentiment_score: resolvedSentimentScore,
       summary: callSummary, // Use prioritized call summary
       meds_taken: medsTaken,
       flags: flags,
@@ -630,7 +745,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       flagsCount: flags.length,
       sleepHours,
       sleepQuality,
-      mood: moodResult.mood,
+      mood: resolvedMood,
       outcome,
       hasTranscript: !!transcript,
       transcriptLength: transcript.length,
@@ -789,27 +904,27 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         callId,
         patientId: patient.id,
         callLogId,
-        hasMood: !!moodResult.mood,
+      hasMood: !!resolvedMood,
         medsTakenCount: medsTaken.length,
         flagsCount: flags.length,
         hasSleepHours: sleepHours !== null && sleepHours !== undefined,
       });
       
       // Save mood to mood_logs (if we have a mood)
-      if (moodResult.mood) {
+      if (resolvedMood) {
         // Map mood from call_logs format (good/neutral/bad) to mood_logs format (happy/neutral/sad)
         const moodMapping: Record<string, string> = {
           'good': 'happy',
           'neutral': 'neutral',
           'bad': 'sad',
         };
-        const moodLogValue = moodMapping[moodResult.mood] || 'neutral';
+        const moodLogValue = moodMapping[resolvedMood] || 'neutral';
         
         logger.info('💾 [WEBHOOK] Saving mood to mood_logs', {
           callId,
           patientId: patient.id,
           callLogId,
-          originalMood: moodResult.mood,
+          originalMood: resolvedMood,
           mappedMood: moodLogValue,
         });
         
@@ -1048,7 +1163,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       
       // Aggregate daily check-in (this also saves to daily_checkins table)
       await aggregateDailyCheckIn(patient.id, callLogId, {
-        mood: moodResult.mood,
+        mood: resolvedMood,
         sleepHours,
         sleepQuality,
         medsTaken,
@@ -1124,7 +1239,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       callLogId,
       outcome,
       callAnswered,
-      mood: moodResult.mood,
+      mood: resolvedMood,
       transcriptLength: transcript.length,
       summary: callSummary,
       summaryLength: callSummary?.length || 0,
