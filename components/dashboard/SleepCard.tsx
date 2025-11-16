@@ -19,6 +19,7 @@ export function SleepCard() {
       return fetchTodaysSleep(selectedPatient.id);
     },
     enabled: !!selectedPatient?.id,
+    refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
   });
 
   if (!selectedPatient) {

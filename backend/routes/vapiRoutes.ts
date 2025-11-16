@@ -8,7 +8,7 @@ import { Router, Request, Response } from 'express';
 import { logger } from '../utils/logger';
 import { getSupabaseClient } from '../supabase/client';
 import { routeToolCall } from '../vapi/tools';
-import { computeMoodFromTranscript } from '../sentiment';
+// Mood inference is now done by VAPI during the call via storeDailyCheckIn tool
 import { getAssistantById } from '../assistants';
 import { aggregateDailyCheckIn } from '../daily/aggregator';
 import { checkVoiceAnomaly } from '../anomaly/anomalyService';
@@ -506,10 +506,10 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       ? 'answered'
       : 'no_answer';
     
-    // Compute mood from transcript (fallback to check-in mood if needed)
-    const moodResult = computeMoodFromTranscript(transcript, callAnswered);
-    let resolvedMood = moodResult.mood || checkInMood;
-    const resolvedSentimentScore = moodResult.score;
+    // Mood will be inferred by VAPI during the call and passed via storeDailyCheckIn tool
+    // We'll extract it from tool calls below
+    let resolvedMood: 'good' | 'neutral' | 'bad' | null = checkInMood;
+    let resolvedSentimentScore = 0.5; // Default neutral score
     
     const context = {
       patientId: patient.id,
@@ -568,23 +568,89 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       });
       
       // Extract data from tool results
-      if (toolCall.name === 'markMedicationStatus' && result.result) {
-        const medStatus = result.result as { medName: string; taken: boolean; timestamp: string };
-        medsTaken.push(medStatus);
-        logger.info('💊 [WEBHOOK] Extracted medication status from tool call', {
-          callId,
-          patientId: patient.id,
-          medName: medStatus.medName,
-          taken: medStatus.taken,
-          timestamp: medStatus.timestamp,
-          totalMedsCollected: medsTaken.length,
-        });
+      if (toolCall.name === 'markMedicationStatus') {
+        // Try to get from result first, then from parameters
+        let medStatus: { medName: string; taken: boolean; timestamp: string } | null = null;
+        
+        if (result.result && typeof result.result === 'object') {
+          const resultData = result.result as any;
+          if (resultData.medName && typeof resultData.taken === 'boolean') {
+            medStatus = {
+              medName: String(resultData.medName).trim(),
+              taken: Boolean(resultData.taken),
+              timestamp: resultData.timestamp || context.timestamp,
+            };
+          }
+        }
+        
+        // Fallback to parameters if result doesn't have the data
+        if (!medStatus && toolCall.parameters.medName && typeof toolCall.parameters.taken === 'boolean') {
+          medStatus = {
+            medName: String(toolCall.parameters.medName).trim(),
+            taken: Boolean(toolCall.parameters.taken),
+            timestamp: (toolCall.parameters.timestamp as string) || context.timestamp,
+          };
+        }
+        
+        if (medStatus) {
+          // Check if we already have this medication
+          const existingIndex = medsTaken.findIndex(m => m.medName.toLowerCase() === medStatus!.medName.toLowerCase());
+          if (existingIndex >= 0) {
+            // Update existing entry if this one is more recent or if it's "taken"
+            if (medStatus.taken || !medsTaken[existingIndex].taken) {
+              medsTaken[existingIndex] = medStatus;
+            }
+          } else {
+            medsTaken.push(medStatus);
+          }
+          
+          logger.info('💊 [WEBHOOK] Extracted medication status from tool call', {
+            callId,
+            patientId: patient.id,
+            medName: medStatus.medName,
+            taken: medStatus.taken,
+            timestamp: medStatus.timestamp,
+            totalMedsCollected: medsTaken.length,
+            source: result.result ? 'result' : 'parameters',
+          });
+        } else {
+          logger.warn('⚠️ [WEBHOOK] markMedicationStatus tool call missing required data', {
+            callId,
+            patientId: patient.id,
+            hasResult: !!result.result,
+            resultKeys: result.result ? Object.keys(result.result) : [],
+            parameterKeys: Object.keys(toolCall.parameters || {}),
+          });
+        }
       }
       
       if (toolCall.name === 'updateFlags' && toolCall.parameters.flags) {
         const newFlags = (toolCall.parameters.flags as unknown[]) || [];
-        flags.push(...newFlags.map(f => String(f)));
+        const flagStrings = newFlags.map(f => String(f)).filter(Boolean);
+        // Only add flags that aren't already in the array
+        flagStrings.forEach(flag => {
+          if (!flags.includes(flag)) {
+            flags.push(flag);
+          }
+        });
         logger.info('🚩 [WEBHOOK] Extracted flags from tool call', {
+          callId,
+          patientId: patient.id,
+          flags: newFlags,
+          totalFlagsCollected: flags.length,
+        });
+      }
+      
+      // Also extract flags from storeDailyCheckIn if present
+      if (toolCall.name === 'storeDailyCheckIn' && toolCall.parameters.flags) {
+        const newFlags = (toolCall.parameters.flags as unknown[]) || [];
+        const flagStrings = newFlags.map(f => String(f)).filter(Boolean);
+        flagStrings.forEach(flag => {
+          if (!flags.includes(flag)) {
+            flags.push(flag);
+          }
+        });
+        logger.info('🚩 [WEBHOOK] Extracted flags from storeDailyCheckIn', {
           callId,
           patientId: patient.id,
           flags: newFlags,
@@ -614,8 +680,54 @@ router.post('/call-ended', async (req: Request, res: Response) => {
           hasSummary: !!toolCall.parameters.summary,
           hasMood: !!toolCall.parameters.mood,
           hasFlags: !!toolCall.parameters.flags,
+          hasMeds: !!toolCall.parameters.meds || !!toolCall.parameters.meds_taken,
           allParameterKeys: Object.keys(toolCall.parameters || {}),
         });
+        
+        // Extract mood from VAPI's inference (highest priority)
+        if (toolCall.parameters.mood) {
+          const moodValue = String(toolCall.parameters.mood).toLowerCase();
+          if (moodValue === 'good' || moodValue === 'neutral' || moodValue === 'bad') {
+            resolvedMood = moodValue as 'good' | 'neutral' | 'bad';
+            // Set sentiment score based on mood
+            resolvedSentimentScore = moodValue === 'good' ? 0.8 : moodValue === 'bad' ? 0.2 : 0.5;
+            logger.info('😊 [WEBHOOK] Extracted mood from VAPI tool call', { 
+              callId, 
+              patientId: patient.id,
+              mood: resolvedMood,
+            });
+          }
+        }
+        
+        // Extract medications from storeDailyCheckIn if present
+        const medsParam = toolCall.parameters.meds || toolCall.parameters.meds_taken;
+        if (medsParam && Array.isArray(medsParam)) {
+          medsParam.forEach((med: any) => {
+            if (med && typeof med === 'object' && med.medName) {
+              const medStatus = {
+                medName: String(med.medName).trim(),
+                taken: Boolean(med.taken),
+                timestamp: med.timestamp || context.timestamp,
+              };
+              // Check if we already have this medication
+              const existingIndex = medsTaken.findIndex(m => m.medName === medStatus.medName);
+              if (existingIndex >= 0) {
+                // Update existing entry if this one is more recent or if it's "taken"
+                if (medStatus.taken || !medsTaken[existingIndex].taken) {
+                  medsTaken[existingIndex] = medStatus;
+                }
+              } else {
+                medsTaken.push(medStatus);
+              }
+            }
+          });
+          logger.info('💊 [WEBHOOK] Extracted medications from storeDailyCheckIn', {
+            callId,
+            patientId: patient.id,
+            medsCount: medsParam.length,
+            totalMedsCollected: medsTaken.length,
+          });
+        }
         
         if (toolCall.parameters.sleepHours || toolCall.parameters.sleep_hours) {
           sleepHours = Number(toolCall.parameters.sleepHours || toolCall.parameters.sleep_hours);
@@ -651,25 +763,8 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       }
     }
     
-    if (flags.length > 1) {
-      flags = Array.from(new Set(flags));
-    }
-    
-    logger.info('📊 [WEBHOOK] Tool call processing summary', {
-      callId,
-      patientId: patient.id,
-      totalToolCalls: toolCalls.length,
-      medsTakenCount: medsTaken.length,
-      medsTaken: medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`),
-      flagsCount: flags.length,
-      flags: flags,
-      sleepHours,
-      sleepQuality,
-      hasCallSummary: !!callSummary,
-      callSummaryPreview: callSummary?.substring(0, 200),
-      hasDailySummary: !!dailySummary,
-      dailySummaryPreview: dailySummary?.substring(0, 200),
-    });
+    // Always deduplicate flags
+    flags = Array.from(new Set(flags));
     
     logger.info('Tool call processing complete', {
       callId,
@@ -718,6 +813,335 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         summary: callSummary,
       });
     }
+    
+    // CRITICAL: Extract medications from summary/transcript AFTER summary is finalized
+    // This is a fallback when VAPI assistant mentions medications but doesn't call markMedicationStatus
+    if (callAnswered && patient.meds && Array.isArray(patient.meds) && patient.meds.length > 0) {
+      const patientMedNames = patient.meds.map((m: any) => {
+        if (typeof m === 'string') return m.toLowerCase();
+        if (m && typeof m === 'object' && m.name) return m.name.toLowerCase();
+        return String(m).toLowerCase();
+      }).filter(Boolean);
+      
+      // Use finalized summary, VAPI summary, or transcript - in that order
+      const textToSearch = (callSummary || summary || transcript || '').toLowerCase();
+      
+      logger.info('🔍 [WEBHOOK] Attempting medication extraction from text', {
+        callId,
+        patientId: patient.id,
+        patientMeds: patientMedNames,
+        hasCallSummary: !!callSummary,
+        hasSummary: !!summary,
+        hasTranscript: !!transcript,
+        textLength: textToSearch.length,
+        textPreview: textToSearch.substring(0, 300),
+        callSummaryText: callSummary || 'NONE',
+        summaryText: summary || 'NONE',
+      });
+      
+      // Check if any patient medications are mentioned in the text
+      for (const medName of patientMedNames) {
+        // Look for patterns indicating medication was taken
+        // Escape special regex characters in medication name
+        const escapedMedName = medName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const patterns = [
+          // "has taken" variations (most common in summaries)
+          new RegExp(`\\bhas\\s+taken\\s+his\\s+${escapedMedName}\\b`, 'i'), // "has taken his Advil"
+          new RegExp(`\\bhas\\s+taken\\s+her\\s+${escapedMedName}\\b`, 'i'), // "has taken her Advil"
+          new RegExp(`\\bhas\\s+taken\\s+the\\s+${escapedMedName}\\b`, 'i'), // "has taken the Advil"
+          new RegExp(`\\bhas\\s+taken\\s+${escapedMedName}\\b`, 'i'), // "has taken Advil"
+          new RegExp(`\\bhas\\s+taken\\s+${escapedMedName}\\s+today\\b`, 'i'), // "has taken Advil today"
+          new RegExp(`\\bhas\\s+taken\\s+his\\s+${escapedMedName}\\s+today\\b`, 'i'), // "has taken his Advil today"
+          
+          // "had taken" variations
+          new RegExp(`\\bhad\\s+taken\\s+${escapedMedName}\\b`, 'i'), // "had taken Advil"
+          new RegExp(`\\bhad\\s+taken\\s+his\\s+${escapedMedName}\\b`, 'i'), // "had taken his Advil"
+          new RegExp(`\\bhad\\s+taken\\s+her\\s+${escapedMedName}\\b`, 'i'), // "had taken her Advil"
+          new RegExp(`\\bhad\\s+taken\\s+the\\s+${escapedMedName}\\b`, 'i'), // "had taken the Advil"
+          
+          // "took" variations
+          new RegExp(`\\btook\\s+${escapedMedName}\\b`, 'i'), // "took Advil"
+          new RegExp(`\\btook\\s+his\\s+${escapedMedName}\\b`, 'i'), // "took his Advil"
+          new RegExp(`\\btook\\s+her\\s+${escapedMedName}\\b`, 'i'), // "took her Advil"
+          new RegExp(`\\btook\\s+the\\s+${escapedMedName}\\b`, 'i'), // "took the Advil"
+          new RegExp(`\\btook\\s+${escapedMedName}\\s+for\\b`, 'i'), // "took Advil for"
+          new RegExp(`\\btook\\s+${escapedMedName}\\s+today\\b`, 'i'), // "took Advil today"
+          
+          // "taken" variations
+          new RegExp(`\\btaken\\s+${escapedMedName}\\b`, 'i'), // "taken Advil"
+          new RegExp(`\\btaken\\s+his\\s+${escapedMedName}\\b`, 'i'), // "taken his Advil"
+          new RegExp(`\\btaken\\s+her\\s+${escapedMedName}\\b`, 'i'), // "taken her Advil"
+          new RegExp(`\\btaken\\s+the\\s+${escapedMedName}\\b`, 'i'), // "taken the Advil"
+          new RegExp(`\\b${escapedMedName}\\s+taken\\b`, 'i'), // "Advil taken"
+          
+          // Other common patterns
+          new RegExp(`\\b${escapedMedName}\\s+for\\b`, 'i'), // "Advil for migraine"
+          new RegExp(`\\busing\\s+${escapedMedName}\\b`, 'i'), // "using Advil"
+          new RegExp(`\\btaking\\s+${escapedMedName}\\b`, 'i'), // "taking Advil"
+          new RegExp(`\\btook\\s+${escapedMedName}\\s+this\\s+morning\\b`, 'i'), // "took Advil this morning"
+          new RegExp(`\\btook\\s+${escapedMedName}\\s+this\\s+afternoon\\b`, 'i'), // "took Advil this afternoon"
+        ];
+        
+        // Test each pattern and log which ones match
+        let foundPattern: RegExp | undefined;
+        for (const pattern of patterns) {
+          if (pattern.test(textToSearch)) {
+            foundPattern = pattern;
+            logger.info('💊 [WEBHOOK] Pattern matched for medication', {
+              callId,
+              patientId: patient.id,
+              medName,
+              pattern: pattern.toString(),
+              textSnippet: textToSearch.substring(Math.max(0, textToSearch.search(pattern) - 50), textToSearch.search(pattern) + 100),
+            });
+            break; // Use first match
+          }
+        }
+        
+        if (foundPattern) {
+          // Extract the original medication name (preserve case)
+          const originalMedName = patient.meds.find((m: any) => {
+            const normalized = typeof m === 'string' ? m.toLowerCase() : (m?.name || String(m)).toLowerCase();
+            return normalized === medName;
+          });
+          
+          const medNameToStore = typeof originalMedName === 'string' 
+            ? originalMedName 
+            : (originalMedName?.name || String(originalMedName) || medName);
+          
+          // Check if we already have this medication
+          const existingIndex = medsTaken.findIndex(m => m.medName.toLowerCase() === medNameToStore.toLowerCase());
+          if (existingIndex >= 0) {
+            // Update to taken if not already taken
+            if (!medsTaken[existingIndex].taken) {
+              medsTaken[existingIndex].taken = true;
+              medsTaken[existingIndex].timestamp = context.timestamp;
+            }
+          } else {
+            medsTaken.push({
+              medName: medNameToStore,
+              taken: true,
+              timestamp: context.timestamp,
+            });
+          }
+          
+          logger.info('💊 [WEBHOOK] ✅ Extracted medication from text', {
+            callId,
+            patientId: patient.id,
+            medName: medNameToStore,
+            source: 'summary/transcript',
+            matchedPattern: foundPattern.toString(),
+            textSnippet: textToSearch.substring(Math.max(0, textToSearch.search(foundPattern) - 50), textToSearch.search(foundPattern) + 100),
+            medsTakenBefore: medsTaken.length,
+            medsTakenAfter: medsTaken.length,
+          });
+        } else {
+          // Also check for negative patterns (not taken)
+          const negativePatterns = [
+            new RegExp(`\\bdidn'?t\\s+take\\s+${escapedMedName}\\b`, 'i'),
+            new RegExp(`\\bdid\\s+not\\s+take\\s+${escapedMedName}\\b`, 'i'),
+            new RegExp(`\\bhaven'?t\\s+taken\\s+${escapedMedName}\\b`, 'i'),
+            new RegExp(`\\bhave\\s+not\\s+taken\\s+${escapedMedName}\\b`, 'i'),
+            new RegExp(`\\bnot\\s+taken\\s+${escapedMedName}\\b`, 'i'),
+            new RegExp(`\\b${escapedMedName}\\s+not\\s+taken\\b`, 'i'),
+          ];
+          
+          const foundNegative = negativePatterns.find(pattern => pattern.test(textToSearch));
+          
+          if (foundNegative) {
+            const originalMedName = patient.meds.find((m: any) => {
+              const normalized = typeof m === 'string' ? m.toLowerCase() : (m?.name || String(m)).toLowerCase();
+              return normalized === medName;
+            });
+            
+            const medNameToStore = typeof originalMedName === 'string' 
+              ? originalMedName 
+              : (originalMedName?.name || String(originalMedName) || medName);
+            
+            const existingIndex = medsTaken.findIndex(m => m.medName.toLowerCase() === medNameToStore.toLowerCase());
+            if (existingIndex >= 0) {
+              medsTaken[existingIndex].taken = false;
+              medsTaken[existingIndex].timestamp = context.timestamp;
+            } else {
+              medsTaken.push({
+                medName: medNameToStore,
+                taken: false,
+                timestamp: context.timestamp,
+              });
+            }
+            
+            logger.info('💊 [WEBHOOK] ✅ Extracted medication NOT taken from text', {
+              callId,
+              patientId: patient.id,
+              medName: medNameToStore,
+              source: 'summary/transcript',
+            });
+          }
+        } else {
+          // Log when no pattern matches for debugging
+          logger.info('💊 [WEBHOOK] No pattern matched for medication', {
+            callId,
+            patientId: patient.id,
+            medName,
+            textToSearch: textToSearch.substring(0, 500), // First 500 chars for debugging
+            patientMedNames,
+          });
+        }
+      }
+      
+      // If no medications found via tools OR extraction, initialize all patient meds as "not taken"
+      if (medsTaken.length === 0) {
+        logger.warn('⚠️ [WEBHOOK] No medications collected via tools or extraction', {
+          callId,
+          patientId: patient.id,
+          patientName: patient.name,
+          toolCallsCount: toolCalls.length,
+          toolCallNames: toolCalls.map(tc => tc.name),
+          transcriptLength: transcript.length,
+          summaryPreview: callSummary?.substring(0, 200),
+          patientMeds: patientMedNames,
+        });
+        
+        // Initialize all patient medications as "not taken" so they show up on dashboard
+        // This ensures the caregiver can see all medications even if not mentioned in call
+        for (const medName of patientMedNames) {
+          const originalMedName = patient.meds.find((m: any) => {
+            const normalized = typeof m === 'string' ? m.toLowerCase() : (m?.name || String(m)).toLowerCase();
+            return normalized === medName;
+          });
+          
+          const medNameToStore = typeof originalMedName === 'string' 
+            ? originalMedName 
+            : (originalMedName?.name || String(originalMedName) || medName);
+          
+          medsTaken.push({
+            medName: medNameToStore,
+            taken: false,
+            timestamp: context.timestamp,
+          });
+        }
+        
+        logger.info('💊 [WEBHOOK] Initialized all patient medications as not taken', {
+          callId,
+          patientId: patient.id,
+          medsCount: medsTaken.length,
+        });
+      }
+    }
+    
+    // CRITICAL: Extract flags from summary/transcript for concerning events
+    // This automatically creates flags for medical emergencies, falls, injuries, etc.
+    if (callAnswered && (callSummary || summary || transcript)) {
+      const textToSearch = (callSummary || summary || transcript || '').toLowerCase();
+      
+      logger.info('🚩 [WEBHOOK] Attempting flag extraction from text', {
+        callId,
+        patientId: patient.id,
+        hasCallSummary: !!callSummary,
+        hasSummary: !!summary,
+        hasTranscript: !!transcript,
+        textLength: textToSearch.length,
+        textPreview: textToSearch.substring(0, 300),
+      });
+      
+      // Define concerning event patterns with their flag types and severities
+      const concerningEvents = [
+        // Falls and injuries (RED severity)
+        { patterns: [/\bfall\b/i, /\bfell\b/i, /\bslipped?\b/i, /\bslip\b/i, /\btripped?\b/i, /\baccident\b/i], type: 'fall', severity: 'red', flagText: 'Fall or slip incident' },
+        { patterns: [/\binjured?\b/i, /\binjury\b/i, /\bhurt\b/i, /\bdamaged?\b/i], type: 'other', severity: 'red', flagText: 'Injury reported' },
+        
+        // Bleeding (RED severity)
+        { patterns: [/\bbloody\s+nose\b/i, /\bnosebleed\b/i, /\bbleeding\b/i, /\bblood\b/i], type: 'other', severity: 'red', flagText: 'Bleeding reported' },
+        
+        // Severe pain (RED severity)
+        { patterns: [/\bsevere\s+pain\b/i, /\bexcruciating\s+pain\b/i, /\bunbearable\s+pain\b/i, /\bintense\s+pain\b/i], type: 'other', severity: 'red', flagText: 'Severe pain reported' },
+        { patterns: [/\breally\s+bad\s+migraine\b/i, /\bsevere\s+migraine\b/i, /\bdebilitating\s+migraine\b/i], type: 'other', severity: 'red', flagText: 'Severe migraine' },
+        
+        // Chest pain / heart issues (RED severity)
+        { patterns: [/\bchest\s+pain\b/i, /\bheart\s+pain\b/i, /\bheart\s+attack\b/i, /\bcardiac\b/i], type: 'other', severity: 'red', flagText: 'Chest or heart pain' },
+        
+        // Difficulty breathing (RED severity)
+        { patterns: [/\bdifficulty\s+breathing\b/i, /\bcan'?t\s+breathe\b/i, /\bshortness\s+of\s+breath\b/i, /\bbreathing\s+problems\b/i], type: 'other', severity: 'red', flagText: 'Breathing difficulties' },
+        
+        // Dizziness / fainting (RED severity)
+        { patterns: [/\bdizzy\b/i, /\bdizziness\b/i, /\bfainted?\b/i, /\bfainting\b/i, /\bpassed\s+out\b/i], type: 'other', severity: 'red', flagText: 'Dizziness or fainting' },
+        
+        // Confusion / disorientation (RED severity)
+        { patterns: [/\bconfused\b/i, /\bconfusion\b/i, /\bdisoriented\b/i, /\bdisorientation\b/i, /\bcan'?t\s+remember\b/i], type: 'other', severity: 'red', flagText: 'Confusion or disorientation' },
+        
+        // Medication issues (YELLOW severity)
+        { patterns: [/\bdidn'?t\s+take\s+med/i, /\bmissed\s+med/i, /\bforgot\s+med/i, /\bmedication\s+missed\b/i], type: 'med_missed', severity: 'yellow', flagText: 'Medication missed' },
+        
+        // Moderate pain (YELLOW severity)
+        { patterns: [/\bmoderate\s+pain\b/i, /\bconstant\s+pain\b/i, /\bpersistent\s+pain\b/i], type: 'other', severity: 'yellow', flagText: 'Moderate pain reported' },
+        
+        // Nausea / vomiting (YELLOW severity)
+        { patterns: [/\bnausea\b/i, /\bvomiting\b/i, /\bthrew\s+up\b/i, /\bthrowing\s+up\b/i], type: 'other', severity: 'yellow', flagText: 'Nausea or vomiting' },
+        
+        // Poor sleep (YELLOW severity - only if very poor)
+        { patterns: [/\bno\s+sleep\b/i, /\binsomnia\b/i, /\bcan'?t\s+sleep\b/i, /\bslept\s+less\s+than\s+2\s+hours\b/i], type: 'other', severity: 'yellow', flagText: 'Severe sleep issues' },
+      ];
+      
+      // Check for each concerning event
+      for (const event of concerningEvents) {
+        const foundPattern = event.patterns.find(pattern => pattern.test(textToSearch));
+        
+        if (foundPattern) {
+          // Create flag string
+          const flagString = `${event.type}:${event.severity}:${event.flagText}`;
+          
+          // Check if flag already exists (avoid duplicates)
+          const flagExists = flags.some(f => {
+            const fStr = String(f).toLowerCase();
+            return fStr.includes(event.type) && fStr.includes(event.severity) && fStr.includes(event.flagText.toLowerCase());
+          });
+          
+          if (!flagExists) {
+            flags.push(flagString);
+            logger.info('🚩 [WEBHOOK] ✅ Extracted flag from text', {
+              callId,
+              patientId: patient.id,
+              flagType: event.type,
+              flagSeverity: event.severity,
+              flagText: event.flagText,
+              matchedPattern: foundPattern.toString(),
+              textSnippet: textToSearch.substring(Math.max(0, textToSearch.search(foundPattern) - 50), textToSearch.search(foundPattern) + 100),
+            });
+          } else {
+            logger.info('🚩 [WEBHOOK] Flag already exists, skipping', {
+              callId,
+              patientId: patient.id,
+              flagType: event.type,
+              flagSeverity: event.severity,
+              flagText: event.flagText,
+            });
+          }
+        }
+      }
+    }
+    
+    // Final summary of all collected data
+    logger.info('📊 [WEBHOOK] Final data summary before saving', {
+      callId,
+      patientId: patient.id,
+      patientName: patient.name,
+      totalToolCalls: toolCalls.length,
+      toolCallNames: toolCalls.map(tc => tc.name),
+      medsTakenCount: medsTaken.length,
+      medsTaken: medsTaken.length > 0 
+        ? medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`)
+        : 'NONE',
+      medsTakenDetail: medsTaken.length > 0 ? JSON.stringify(medsTaken, null, 2) : 'NONE',
+      flagsCount: flags.length,
+      flags: flags.length > 0 ? flags : 'NONE',
+      sleepHours: sleepHours ?? 'NONE',
+      sleepQuality: sleepQuality || 'NONE',
+      mood: resolvedMood || 'NONE',
+      hasCallSummary: !!callSummary,
+      callSummaryPreview: callSummary?.substring(0, 200),
+      hasDailySummary: !!dailySummary,
+      dailySummaryPreview: dailySummary?.substring(0, 200),
+    });
     
     // Create or update call log
     const callLogData: Partial<CallLog> = {
@@ -967,6 +1391,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
       }
       
       // Save medications to med_logs
+      // IMPORTANT: Save medications even if taken=false, so we track all medication statuses
       if (medsTaken && medsTaken.length > 0) {
         logger.info('💾 [WEBHOOK] Saving medications to med_logs', {
           callId,
@@ -974,45 +1399,96 @@ router.post('/call-ended', async (req: Request, res: Response) => {
           callLogId,
           medsCount: medsTaken.length,
           meds: medsTaken.map(m => `${m.medName}: ${m.taken ? 'taken' : 'not taken'}`),
+          medsDetail: JSON.stringify(medsTaken, null, 2),
         });
         
         try {
-          const medLogEntries = medsTaken.map(med => ({
-            patient_id: patient.id,
-            med_name: med.medName,
-            taken: med.taken,
-            taken_at: med.timestamp || context.timestamp,
-            timestamp: med.timestamp || context.timestamp,
-          }));
+          // For each medication, upsert (update if exists for today, otherwise insert)
+          const today = new Date(context.timestamp);
+          today.setHours(0, 0, 0, 0);
+          const tomorrow = new Date(today);
+          tomorrow.setDate(tomorrow.getDate() + 1);
           
-          logger.info('💾 [WEBHOOK] Prepared med_log entries', {
+          for (const med of medsTaken) {
+            // Check if log already exists for today
+            const { data: existing } = await supabase
+              .from('med_logs')
+              .select('id')
+              .eq('patient_id', patient.id)
+              .eq('med_name', med.medName)
+              .gte('timestamp', today.toISOString())
+              .lt('timestamp', tomorrow.toISOString())
+              .maybeSingle();
+            
+            const medLogEntry = {
+              patient_id: patient.id,
+              med_name: med.medName.trim(),
+              taken: med.taken,
+              taken_at: med.taken ? (med.timestamp || context.timestamp) : null,
+              timestamp: med.timestamp || context.timestamp,
+            };
+            
+            if (existing) {
+              // Update existing log
+              const { data: updated, error: updateError } = await supabase
+                .from('med_logs')
+                .update(medLogEntry)
+                .eq('id', existing.id)
+                .select()
+                .single();
+              
+              if (updateError) {
+                logger.error('❌ [WEBHOOK] Failed to update medication log', {
+                  callId,
+                  patientId: patient.id,
+                  medName: med.medName,
+                  error: updateError.message,
+                  errorCode: updateError.code,
+                });
+              } else {
+                logger.info('✅ [WEBHOOK] Updated medication log', {
+                  callId,
+                  patientId: patient.id,
+                  medName: med.medName,
+                  taken: med.taken,
+                  medLogId: updated.id,
+                });
+              }
+            } else {
+              // Insert new log
+              const { data: inserted, error: insertError } = await supabase
+                .from('med_logs')
+                .insert(medLogEntry)
+                .select()
+                .single();
+              
+              if (insertError) {
+                logger.error('❌ [WEBHOOK] Failed to insert medication log', {
+                  callId,
+                  patientId: patient.id,
+                  medName: med.medName,
+                  error: insertError.message,
+                  errorCode: insertError.code,
+                  errorDetails: insertError.details,
+                  entry: JSON.stringify(medLogEntry, null, 2),
+                });
+              } else {
+                logger.info('✅ [WEBHOOK] Inserted medication log', {
+                  callId,
+                  patientId: patient.id,
+                  medName: med.medName,
+                  taken: med.taken,
+                  medLogId: inserted.id,
+                });
+              }
+            }
+          }
+          
+          logger.info('✅ [WEBHOOK] Completed saving medication logs', {
             callId,
             patientId: patient.id,
-            entries: JSON.stringify(medLogEntries, null, 2),
+            totalMeds: medsTaken.length,
           });
-          
-          const { data: medData, error: medError } = await supabase
-            .from('med_logs')
-            .insert(medLogEntries)
-            .select();
-          
-          if (medError) {
-            logger.error('❌ [WEBHOOK] Failed to save medication logs', { 
-              callId,
-              patientId: patient.id,
-              error: medError.message,
-              errorCode: medError.code,
-              errorDetails: medError.details,
-              entriesAttempted: JSON.stringify(medLogEntries, null, 2),
-            });
-          } else {
-            logger.info('✅ [WEBHOOK] Successfully saved medication logs', { 
-              callId,
-              patientId: patient.id,
-              savedCount: medData?.length || 0,
-              savedIds: medData?.map(m => m.id) || [],
-            });
-          }
         } catch (error: any) {
           logger.error('❌ [WEBHOOK] Exception saving medication logs', { 
             callId,
@@ -1026,6 +1502,7 @@ router.post('/call-ended', async (req: Request, res: Response) => {
           callId,
           patientId: patient.id,
           medsTakenCount: medsTaken.length,
+          medsTakenArray: JSON.stringify(medsTaken),
         });
       }
       
@@ -1041,17 +1518,51 @@ router.post('/call-ended', async (req: Request, res: Response) => {
         
         try {
           // Map flag strings to flag types and severities
+          // Support both formats:
+          // 1. New format: "type:severity:description" (e.g., "fall:red:Fall or slip incident")
+          // 2. Old format: plain text (e.g., "fall" or "medication missed")
           const flagEntries = flags.map(flag => {
-            const flagStr = String(flag).toLowerCase();
+            const flagStr = String(flag);
             let type: 'fall' | 'med_missed' | 'other' = 'other';
             let severity: 'red' | 'yellow' = 'yellow';
             
-            if (flagStr.includes('fall') || flagStr.includes('slip')) {
-              type = 'fall';
-              severity = 'red';
-            } else if (flagStr.includes('med') || flagStr.includes('medication')) {
-              type = 'med_missed';
-              severity = 'yellow';
+            // Check if flag is in new format: "type:severity:description"
+            if (flagStr.includes(':')) {
+              const parts = flagStr.split(':');
+              if (parts.length >= 2) {
+                const flagType = parts[0].toLowerCase().trim();
+                const flagSeverity = parts[1].toLowerCase().trim();
+                
+                // Parse type
+                if (flagType === 'fall') {
+                  type = 'fall';
+                } else if (flagType === 'med_missed') {
+                  type = 'med_missed';
+                } else {
+                  type = 'other';
+                }
+                
+                // Parse severity
+                if (flagSeverity === 'red') {
+                  severity = 'red';
+                } else {
+                  severity = 'yellow';
+                }
+              }
+            } else {
+              // Old format: parse from text content
+              const flagStrLower = flagStr.toLowerCase();
+              if (flagStrLower.includes('fall') || flagStrLower.includes('slip')) {
+                type = 'fall';
+                severity = 'red';
+              } else if (flagStrLower.includes('med') || flagStrLower.includes('medication')) {
+                type = 'med_missed';
+                severity = 'yellow';
+              } else {
+                // Default to 'other' with yellow severity for unknown flags
+                type = 'other';
+                severity = 'yellow';
+              }
             }
             
             return {

@@ -53,10 +53,27 @@ export async function fetchTodaysSleep(patientId: string): Promise<SleepData> {
     console.warn('Error fetching daily check-in:', checkInError);
   }
 
-  // Prioritize sleep_logs hours, but use daily_checkins for quality
-  const hours = sleepLogs?.hours ?? dailyCheckIn?.sleep_hours ?? null;
-  const quality = dailyCheckIn?.sleep_quality ?? null;
-  const timestamp = sleepLogs?.timestamp ?? dailyCheckIn?.date ?? null;
+  // Also check call_logs for sleep data (most recent answered call)
+  const { data: recentCallLog, error: callLogError } = await supabaseClient
+    .from('call_logs')
+    .select('sleep_hours, sleep_quality, timestamp')
+    .eq('patient_id', patientId)
+    .eq('outcome', 'answered')
+    .gte('timestamp', today.toISOString())
+    .lt('timestamp', tomorrow.toISOString())
+    .not('sleep_hours', 'is', null)
+    .order('timestamp', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (callLogError && callLogError.code !== 'PGRST116') {
+    console.warn('Error fetching call log sleep data:', callLogError);
+  }
+
+  // Prioritize: call_logs > daily_checkins > sleep_logs
+  const hours = recentCallLog?.sleep_hours ?? dailyCheckIn?.sleep_hours ?? sleepLogs?.hours ?? null;
+  const quality = recentCallLog?.sleep_quality ?? dailyCheckIn?.sleep_quality ?? null;
+  const timestamp = recentCallLog?.timestamp ?? sleepLogs?.timestamp ?? dailyCheckIn?.date ?? null;
 
   return {
     hours: hours !== null && hours !== undefined ? Number(hours) : null,

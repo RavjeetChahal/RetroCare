@@ -54,6 +54,8 @@ export function useRealtimeSync({ caregiverId, patientId, patientIds = [] }: Opt
 
           if (affectedPatientId) {
             queryClient.invalidateQueries({ queryKey: ['calls', affectedPatientId, 'today'] });
+            // Also invalidate mood query since mood comes from call_logs
+            queryClient.invalidateQueries({ queryKey: ['mood', affectedPatientId, 'today'] });
           }
         },
       )
@@ -77,6 +79,8 @@ export function useRealtimeSync({ caregiverId, patientId, patientIds = [] }: Opt
         () => {
           queryClient.invalidateQueries({ queryKey: ['calls', patientId, 'today'] });
           queryClient.invalidateQueries({ queryKey: ['callLogs'] });
+          // Also invalidate mood query since mood comes from call_logs (GPT-inferred)
+          queryClient.invalidateQueries({ queryKey: ['mood', patientId, 'today'] });
         },
       )
       .on(

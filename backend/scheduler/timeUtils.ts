@@ -5,9 +5,11 @@
 /**
  * Convert UTC time to patient's local timezone and extract hour
  * Returns hour in format "HH:00" (e.g., "09:00", "14:00")
+ * @param timezone - Patient's timezone (e.g., "America/New_York")
+ * @param date - Optional date to use instead of current time (for testing)
  */
-export function getLocalHour(timezone: string): string {
-  const now = new Date();
+export function getLocalHour(timezone: string, date?: Date): string {
+  const now = date || new Date();
   
   // Convert to patient's timezone
   const formatter = new Intl.DateTimeFormat('en-US', {
@@ -51,13 +53,16 @@ export function parseTimeSlot(timeSlot: string): { hour: number; minute: number 
 
 /**
  * Check if we should call a patient now based on their schedule and timezone
+ * @param callSchedule - Array of scheduled times (e.g., ["09:00", "14:00"])
+ * @param timezone - Patient's timezone (e.g., "America/New_York")
+ * @param date - Optional date to use instead of current time (for testing)
  */
-export function shouldCallNow(callSchedule: string[], timezone: string): boolean {
+export function shouldCallNow(callSchedule: string[], timezone: string, date?: Date): boolean {
   if (!callSchedule || callSchedule.length === 0) {
     return false;
   }
   
-  const currentHour = getLocalHour(timezone);
+  const currentHour = getLocalHour(timezone, date);
   
   return callSchedule.includes(currentHour);
 }

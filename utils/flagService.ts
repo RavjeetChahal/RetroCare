@@ -29,13 +29,36 @@ export async function fetchTodaysFlags(patientId: string): Promise<Flag[]> {
     .eq('patient_id', patientId)
     .gte('timestamp', today.toISOString())
     .lt('timestamp', tomorrow.toISOString())
+    // Order by urgency: red severity first, then yellow, then by timestamp (most recent first)
+    .order('severity', { ascending: true }) // red='red' comes before yellow='yellow' alphabetically, but we want red first
     .order('timestamp', { ascending: false });
-
+  
   if (error) {
     throw error;
   }
-
-  return (data as Flag[]) ?? [];
+  
+  // Sort manually: red severity first, then yellow, then by timestamp descending
+  const sorted = (data as Flag[] ?? []).sort((a, b) => {
+    // First sort by severity: red > yellow
+    if (a.severity === 'red' && b.severity !== 'red') return -1;
+    if (a.severity !== 'red' && b.severity === 'red') return 1;
+    // Then by timestamp (most recent first)
+    return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+  });
+  
+  // Remove duplicates (same type, severity, and timestamp within 1 minute)
+  const uniqueFlags: Flag[] = [];
+  const seen = new Set<string>();
+  
+  for (const flag of sorted) {
+    const key = `${flag.type}-${flag.severity}-${new Date(flag.timestamp).toISOString().slice(0, 16)}`; // Round to minute
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueFlags.push(flag);
+    }
+  }
+  
+  return uniqueFlags;
 }
 
 /**

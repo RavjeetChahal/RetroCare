@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { usePatientStore } from '../../hooks/usePatientStore';
 import { fetchTodaysMedicationStatus, type MedicationStatus } from '../../utils/medService';
 import { colors, spacing } from '../../styles/tokens';
+import { Ionicons } from '@expo/vector-icons';
 
 /**
  * Format time to 12-hour format (e.g., "2:30 PM")
@@ -28,17 +29,24 @@ export function MedsCard() {
   const { selectedPatient } = usePatientStore();
 
   // Fetch today's medication status
+  // Include today's date in query key to ensure it refreshes daily
+  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+  
   const {
     data: medicationStatus = [],
     isLoading,
     error,
   } = useQuery({
-    queryKey: ['medications', selectedPatient?.id, 'today'],
+    queryKey: ['medications', selectedPatient?.id, 'today', today],
     queryFn: async () => {
       if (!selectedPatient?.id) return [];
-      return fetchTodaysMedicationStatus(selectedPatient.id);
+      const status = await fetchTodaysMedicationStatus(selectedPatient.id);
+      console.log('[MedsCard] Fetched medication status:', status);
+      return status;
     },
     enabled: !!selectedPatient?.id,
+    refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
+    staleTime: 0, // Always consider data stale to ensure fresh updates
   });
 
   if (!selectedPatient) {
@@ -48,7 +56,7 @@ export function MedsCard() {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
-        <Text style={styles.title}>Meds Taken Today</Text>
+        <Text style={styles.title}>Med Status</Text>
         
         {isLoading ? (
           <View style={styles.loadingContainer}>
@@ -68,17 +76,32 @@ export function MedsCard() {
                   key={med.medName}
                   style={[
                     styles.medPill,
-                    med.taken && styles.medPillTaken,
+                    med.taken ? styles.medPillTaken : styles.medPillNotTaken,
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.medName,
-                      med.taken && styles.medNameTaken,
-                    ]}
-                  >
-                    {med.medName}
-                  </Text>
+                  {med.taken ? (
+                    <Ionicons name="checkmark-circle" size={20} color="#10b981" style={styles.checkIcon} />
+                  ) : (
+                    <Ionicons name="close-circle" size={20} color="#ef4444" style={styles.checkIcon} />
+                  )}
+                  <View style={styles.medInfo}>
+                    <Text
+                      style={[
+                        styles.medName,
+                        med.taken ? styles.medNameTaken : styles.medNameNotTaken,
+                      ]}
+                    >
+                      {med.medName}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.medStatus,
+                        med.taken ? styles.medStatusTaken : styles.medStatusNotTaken,
+                      ]}
+                    >
+                      {med.taken ? 'Taken' : 'Not Taken'}
+                    </Text>
+                  </View>
                   {timeStr && (
                     <Text style={styles.medTime}>{timeStr}</Text>
                   )}
@@ -131,37 +154,59 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
   },
   medsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexDirection: 'column',
     gap: spacing.md,
   },
   medPill: {
-    backgroundColor: '#1e293b',
     borderRadius: 12,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
-    borderWidth: 1,
-    borderColor: '#334155',
+    borderWidth: 2,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
+    gap: spacing.sm,
+    minHeight: 60,
+  },
+  medPillNotTaken: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)', // red tint
+    borderColor: '#ef4444', // red-500
   },
   medPillTaken: {
-    backgroundColor: '#1e293b',
-    opacity: 0.6,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)', // green tint
+    borderColor: '#10b981', // green-500
+  },
+  checkIcon: {
+    marginRight: spacing.xs,
+  },
+  medInfo: {
+    flex: 1,
+    flexDirection: 'column',
+    gap: spacing.xs / 2,
   },
   medName: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
-    color: colors.textPrimary,
+  },
+  medNameNotTaken: {
+    color: '#ef4444', // red-500
   },
   medNameTaken: {
-    textDecorationLine: 'line-through',
-    color: colors.textSecondary,
+    color: '#10b981', // green-500
+  },
+  medStatus: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  medStatusNotTaken: {
+    color: '#ef4444', // red-500
+  },
+  medStatusTaken: {
+    color: '#10b981', // green-500
   },
   medTime: {
     fontSize: 12,
     fontWeight: '500',
     color: colors.textSecondary,
+    marginLeft: 'auto',
   },
 });

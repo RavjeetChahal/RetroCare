@@ -1,16 +1,15 @@
-import { useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
+import { useQuery } from '@tanstack/react-query';
 import { usePatientStore } from '../../hooks/usePatientStore';
-import { fetchTodaysMood, updateTodaysMood, type Mood } from '../../utils/moodService';
+import { getSupabaseClient } from '../../utils/supabaseClient';
 import { colors, spacing } from '../../styles/tokens';
+
+type Mood = 'good' | 'neutral' | 'bad' | null;
 
 export function MoodCard() {
   const { selectedPatient } = usePatientStore();
-  const queryClient = useQueryClient();
-  const [isUpdating, setIsUpdating] = useState(false);
 
-  // Fetch today's mood for selected patient
+  // Fetch today's mood from call logs (GPT-inferred)
   const {
     data: todaysMood,
     isLoading,
@@ -19,66 +18,59 @@ export function MoodCard() {
     queryKey: ['mood', selectedPatient?.id, 'today'],
     queryFn: async () => {
       if (!selectedPatient?.id) return null;
-      return fetchTodaysMood(selectedPatient.id);
+      
+      const supabase = getSupabaseClient();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      // Get the most recent answered call's mood (which is GPT-inferred)
+      const { data, error } = await supabase
+        .from('call_logs')
+        .select('mood')
+        .eq('patient_id', selectedPatient.id)
+        .eq('outcome', 'answered')
+        .not('mood', 'is', null)
+        .gte('timestamp', today.toISOString())
+        .lt('timestamp', tomorrow.toISOString())
+        .order('timestamp', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error fetching mood:', error);
+        return null;
+      }
+
+      // Map from call_logs format (good/neutral/bad) to display format
+      const moodMapping: Record<string, { word: string; color: string; bgColor: string }> = {
+        'good': {
+          word: 'Good',
+          color: '#10b981', // green-500
+          bgColor: 'rgba(16, 185, 129, 0.15)', // green tint
+        },
+        'neutral': {
+          word: 'Neutral',
+          color: '#eab308', // yellow-500
+          bgColor: 'rgba(234, 179, 8, 0.15)', // yellow tint
+        },
+        'bad': {
+          word: 'Bad',
+          color: '#ef4444', // red-500
+          bgColor: 'rgba(239, 68, 68, 0.15)', // red tint
+        },
+      };
+
+      return data?.mood ? moodMapping[data.mood] || moodMapping['neutral'] : null;
     },
     enabled: !!selectedPatient?.id,
+    refetchInterval: 5000, // Refetch every 5 seconds for real-time updates
   });
-
-  // Mutation to update mood
-  const updateMoodMutation = useMutation({
-    mutationFn: async (mood: Mood) => {
-      if (!selectedPatient?.id) throw new Error('No patient selected');
-      return updateTodaysMood(selectedPatient.id, mood);
-    },
-    onSuccess: () => {
-      // Invalidate and refetch mood data
-      queryClient.invalidateQueries({ queryKey: ['mood', selectedPatient?.id] });
-    },
-  });
-
-  const handleMoodSelect = async (mood: Mood) => {
-    if (!selectedPatient?.id || isUpdating) return;
-
-    setIsUpdating(true);
-    try {
-      await updateMoodMutation.mutateAsync(mood);
-    } catch (error) {
-      console.error('Failed to update mood:', error);
-      // You could show an error toast here
-    } finally {
-      setIsUpdating(false);
-    }
-  };
 
   if (!selectedPatient) {
     return null;
   }
-
-  const moods: { value: Mood; emoji: string; label: string; color: string; bgColor: string }[] = [
-    {
-      value: 'happy',
-      emoji: '😊',
-      label: 'Happy',
-      color: '#10b981', // green-500
-      bgColor: 'rgba(16, 185, 129, 0.15)', // green tint
-    },
-    {
-      value: 'neutral',
-      emoji: '😐',
-      label: 'Neutral',
-      color: '#eab308', // yellow-500
-      bgColor: 'rgba(234, 179, 8, 0.15)', // yellow tint
-    },
-    {
-      value: 'sad',
-      emoji: '😔',
-      label: 'Sad',
-      color: '#ef4444', // red-500
-      bgColor: 'rgba(239, 68, 68, 0.15)', // red tint
-    },
-  ];
-
-  const selectedMood = todaysMood?.mood || null;
 
   return (
     <View style={styles.container}>
@@ -91,37 +83,29 @@ export function MoodCard() {
           </View>
         ) : error ? (
           <Text style={styles.errorText}>Failed to load mood</Text>
-        ) : (
+        ) : todaysMood ? (
           <View style={styles.moodContainer}>
-            {moods.map((mood) => {
-              const isSelected = selectedMood === mood.value;
-              return (
-                <Pressable
-                  key={mood.value}
-                  style={[
-                    styles.moodPill,
-                    {
-                      backgroundColor: isSelected ? mood.bgColor : colors.card,
-                      borderColor: isSelected ? mood.color : '#334155',
-                      borderWidth: isSelected ? 2 : 1,
-                    },
-                  ]}
-                  onPress={() => handleMoodSelect(mood.value)}
-                  disabled={isUpdating}
-                >
-                  <Text style={styles.moodEmoji}>{mood.emoji}</Text>
-                  <Text
-                    style={[
-                      styles.moodLabel,
-                      { color: isSelected ? mood.color : colors.textSecondary },
-                    ]}
-                  >
-                    {mood.label}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            <View
+              style={[
+                styles.moodDisplay,
+                {
+                  backgroundColor: todaysMood.bgColor,
+                  borderColor: todaysMood.color,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.moodWord,
+                  { color: todaysMood.color },
+                ]}
+              >
+                {todaysMood.word}
+              </Text>
+            </View>
           </View>
+        ) : (
+          <Text style={styles.noMoodText}>No call data today</Text>
         )}
       </View>
     </View>
@@ -162,26 +146,23 @@ const styles = StyleSheet.create({
   },
   moodContainer: {
     flexDirection: 'row',
-    gap: spacing.md,
-    flexWrap: 'wrap',
   },
-  moodPill: {
-    flex: 1,
-    minWidth: 90,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+  moodDisplay: {
     paddingVertical: spacing.md,
-    paddingHorizontal: spacing.sm,
+    paddingHorizontal: spacing.lg,
     borderRadius: 12,
-    gap: spacing.xs,
+    borderWidth: 2,
+    alignSelf: 'flex-start',
   },
-  moodEmoji: {
-    fontSize: 24,
-  },
-  moodLabel: {
-    fontSize: 15,
+  moodWord: {
+    fontSize: 18,
     fontWeight: '600',
+  },
+  noMoodText: {
+    color: colors.textSecondary,
+    fontSize: 14,
+    fontStyle: 'italic',
+    paddingVertical: spacing.md,
   },
 });
 

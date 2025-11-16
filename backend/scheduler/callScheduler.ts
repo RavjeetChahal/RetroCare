@@ -13,7 +13,7 @@ import { getAssistantByName, getAssistantId } from '../assistants';
 /**
  * Get all patients that need calls right now
  */
-async function getPatientsDueForCalls(): Promise<Patient[]> {
+export async function getPatientsDueForCalls(): Promise<Patient[]> {
   const supabase = getSupabaseClient();
   const { data: patients, error } = await supabase
     .from('patients')
@@ -34,7 +34,7 @@ async function getPatientsDueForCalls(): Promise<Patient[]> {
     }
 
     // Check if current hour matches schedule (hourly scheduling)
-    if (shouldCallNow(patient.call_schedule, patient.timezone)) {
+    if (shouldCallNow(patient.call_schedule, patient.timezone, now)) {
       // Check if we already called in this hour
       const lastCallAt = patient.last_call_at
         ? new Date(patient.last_call_at)
