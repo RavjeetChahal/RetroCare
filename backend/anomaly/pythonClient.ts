@@ -21,7 +21,10 @@ export interface CompareResponse {
  */
 export async function extractEmbedding(audioUrl: string): Promise<EmbeddingResponse> {
   try {
-    logger.info('Extracting embedding from Python service', { audioUrl });
+    logger.info('Extracting embedding from Python service', { 
+      audioUrl,
+      pythonServiceUrl: PYTHON_SERVICE_URL,
+    });
     
     const response = await axios.post<EmbeddingResponse>(
       `${PYTHON_SERVICE_URL}/embed`,
@@ -31,8 +34,16 @@ export async function extractEmbedding(audioUrl: string): Promise<EmbeddingRespo
       },
       {
         timeout: 60000, // 60 second timeout for audio processing
+        validateStatus: (status) => status < 500, // Don't throw on 4xx errors
       }
     );
+    
+    // Check for HTTP error status
+    if (response.status >= 400) {
+      throw new Error(
+        `Python service returned ${response.status}: ${JSON.stringify(response.data)}`
+      );
+    }
 
     logger.info('Embedding extracted successfully', {
       embeddingLength: response.data.embedding.length,
@@ -41,13 +52,36 @@ export async function extractEmbedding(audioUrl: string): Promise<EmbeddingRespo
 
     return response.data;
   } catch (error: any) {
-    logger.error('Failed to extract embedding from Python service', {
-      error: error.message,
+    const errorDetails = {
+      message: error.message,
+      code: error.code,
       response: error.response?.data,
-    });
-    throw new Error(
-      `Python service embedding extraction failed: ${error.response?.data?.detail || error.message}`
-    );
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      url: `${PYTHON_SERVICE_URL}/embed`,
+      audioUrl,
+    };
+    
+    logger.error('Failed to extract embedding from Python service', errorDetails);
+    
+    // Provide more helpful error messages
+    if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND') {
+      throw new Error(
+        `Python service not reachable at ${PYTHON_SERVICE_URL}. Is the service running?`
+      );
+    } else if (error.code === 'ETIMEDOUT') {
+      throw new Error(
+        `Python service request timed out after 60s. The service may be overloaded or the audio file is too large.`
+      );
+    } else if (error.response?.status) {
+      throw new Error(
+        `Python service returned error ${error.response.status}: ${error.response?.data?.detail || error.response.statusText}`
+      );
+    } else {
+      throw new Error(
+        `Python service embedding extraction failed: ${error.response?.data?.detail || error.message || 'Unknown error'}`
+      );
+    }
   }
 }
 
