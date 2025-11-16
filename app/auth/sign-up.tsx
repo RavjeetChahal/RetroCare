@@ -58,6 +58,7 @@ export default function SignUpScreen() {
 
       if (result?.status === 'complete') {
         await setActive?.({ session: result.createdSessionId });
+        // New signups always go to onboarding
         router.replace('/onboarding');
       } else {
         setError('Verification incomplete. Please check the latest code and try again.');
@@ -146,31 +147,50 @@ const styles = StyleSheet.create({
   },
   card: {
     backgroundColor: colors.card,
-    padding: spacing.lg,
-    borderRadius: 16,
-    gap: spacing.md,
+    padding: spacing.xl,
+    borderRadius: 20,
+    gap: spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 4,
   },
   title: {
-    fontSize: 22,
+    fontSize: 28,
     fontWeight: '700',
     color: colors.textPrimary,
+    letterSpacing: -0.5,
+    marginBottom: spacing.xs,
   },
   subtitle: {
     color: colors.textSecondary,
+    fontSize: 15,
+    lineHeight: 22,
+    marginBottom: spacing.sm,
   },
   input: {
-    borderWidth: 1,
-    borderColor: colors.textSecondary,
+    borderWidth: 1.5,
+    borderColor: '#334155',
     borderRadius: 12,
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     color: colors.textPrimary,
+    fontSize: 16,
+    backgroundColor: colors.background,
   },
   button: {
     backgroundColor: colors.accent,
-    padding: spacing.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
     borderRadius: 12,
     alignItems: 'center',
+    marginTop: spacing.sm,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   buttonDisabled: {
     opacity: 0.5,
@@ -182,6 +202,8 @@ const styles = StyleSheet.create({
   },
   error: {
     color: '#fca5a5',
+    fontSize: 14,
+    marginTop: spacing.xs,
   },
 });
 

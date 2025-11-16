@@ -1,62 +1,35 @@
-import { Link } from 'expo-router';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { colors, spacing } from '../styles/tokens';
+import { useEffect } from 'react';
+import { useRouter } from 'expo-router';
+import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import { useUser } from '@clerk/clerk-expo';
+import { colors } from '../styles/tokens';
 
-const routes = [
-  { label: 'Auth', href: '/auth' as const },
-  { label: 'Onboarding', href: '/onboarding' as const },
-  { label: 'Dashboard', href: '/dashboard' as const },
-  { label: 'Calendar', href: '/calendar' as const },
-  { label: 'Patient Management', href: '/patient' as const },
-  { label: 'Voice Preview', href: '/voice-preview' as const },
-] as const;
+export default function IndexScreen() {
+  const router = useRouter();
+  const { user, isLoaded: isUserLoaded } = useUser();
 
-export default function HomeScreen() {
+  useEffect(() => {
+    if (!isUserLoaded) return;
+
+    // ALWAYS redirect to /auth first - let /auth handle routing for signed-in users
+    // This ensures the app always starts at /auth, never directly to onboarding
+    // /auth will check if user is signed in and route to dashboard/onboarding accordingly
+    router.replace('/auth');
+  }, [isUserLoaded, router]);
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>RetroCare</Text>
-      <Text style={styles.subtitle}>
-        Select a module below to open its placeholder screen. Each module will be expanded in
-        later phases.
-      </Text>
-      <View style={styles.links}>
-        {routes.map((route) => (
-          <Link key={route.href} href={route.href} style={styles.link}>
-            <Text style={styles.linkText}>{route.label}</Text>
-          </Link>
-        ))}
-      </View>
-    </ScrollView>
+    <View style={styles.container}>
+      <ActivityIndicator size="large" color={colors.accent} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flexGrow: 1,
-    padding: spacing.lg,
-    gap: spacing.lg,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.textPrimary,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: colors.textSecondary,
-  },
-  links: {
-    gap: spacing.md,
-  },
-  link: {
-    backgroundColor: colors.card,
-    padding: spacing.md,
-    borderRadius: 16,
-  },
-  linkText: {
-    color: colors.textPrimary,
-    fontSize: 18,
-    fontWeight: '600',
+    flex: 1,
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
 

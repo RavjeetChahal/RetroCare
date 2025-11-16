@@ -195,16 +195,59 @@ export default function DashboardScreen() {
     >
       {/* Header */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerContent}>
           <Text style={styles.title}>Dashboard</Text>
           <Text style={styles.subtitle}>
-            {patients.length} {patients.length === 1 ? 'patient' : 'patients'}
+            {patients.length} {patients.length === 1 ? 'patient' : 'patients'} registered
           </Text>
         </View>
         <Pressable style={styles.signOutButton} onPress={handleSignOut}>
           <Text style={styles.signOutText}>Sign Out</Text>
         </Pressable>
       </View>
+
+      {/* Patient Info Cards */}
+      {patients.length > 0 && (
+        <View style={styles.patientsSection}>
+          <Text style={styles.sectionTitle}>Patients</Text>
+          {patients.map((patient) => (
+            <View key={patient.id} style={styles.patientCard}>
+              <View style={styles.patientHeader}>
+                <View>
+                  <Text style={styles.patientName}>{patient.name}</Text>
+                  <Text style={styles.patientDetails}>
+                    Age {patient.age} • {patient.phone}
+                  </Text>
+                </View>
+              </View>
+              {patient.meds && Array.isArray(patient.meds) && patient.meds.length > 0 && (
+                <View style={styles.infoSection}>
+                  <Text style={styles.infoLabel}>Medications</Text>
+                  <Text style={styles.infoValue}>
+                    {patient.meds.join(', ')}
+                  </Text>
+                </View>
+              )}
+              {patient.conditions && Array.isArray(patient.conditions) && patient.conditions.length > 0 && (
+                <View style={styles.infoSection}>
+                  <Text style={styles.infoLabel}>Conditions</Text>
+                  <Text style={styles.infoValue}>
+                    {patient.conditions.join(', ')}
+                  </Text>
+                </View>
+              )}
+              {patient.last_call_at && (
+                <View style={styles.infoSection}>
+                  <Text style={styles.infoLabel}>Last Call</Text>
+                  <Text style={styles.infoValue}>
+                    {new Date(patient.last_call_at).toLocaleDateString()} {new Date(patient.last_call_at).toLocaleTimeString()}
+                  </Text>
+                </View>
+              )}
+            </View>
+          ))}
+        </View>
+      )}
 
       {/* View Toggle */}
       <View style={styles.toggleContainer}>
@@ -256,72 +299,137 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   contentContainer: {
-    padding: spacing.md,
+    padding: spacing.lg,
     paddingBottom: spacing.xl,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: spacing.lg,
+    marginBottom: spacing.xl,
+  },
+  headerContent: {
+    flex: 1,
   },
   title: {
-    fontSize: 28,
+    fontSize: 32,
     fontWeight: '700',
     color: colors.textPrimary,
     marginBottom: spacing.xs,
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 15,
     color: colors.textSecondary,
   },
   signOutButton: {
     backgroundColor: colors.card,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    borderRadius: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
   signOutText: {
     color: colors.textPrimary,
     fontSize: 14,
     fontWeight: '600',
   },
+  patientsSection: {
+    marginBottom: spacing.xl,
+    gap: spacing.md,
+  },
+  sectionTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.sm,
+  },
+  patientCard: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    padding: spacing.lg,
+    gap: spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  patientHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  patientName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    marginBottom: spacing.xs,
+  },
+  patientDetails: {
+    fontSize: 14,
+    color: colors.textSecondary,
+  },
+  infoSection: {
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#334155',
+  },
+  infoLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: spacing.xs,
+  },
+  infoValue: {
+    fontSize: 15,
+    color: colors.textPrimary,
+    lineHeight: 22,
+  },
   toggleContainer: {
     flexDirection: 'row',
     backgroundColor: colors.card,
     borderRadius: 12,
     padding: spacing.xs,
-    marginBottom: spacing.md,
+    marginBottom: spacing.lg,
     gap: spacing.xs,
   },
   toggleButton: {
     flex: 1,
-    paddingVertical: spacing.sm,
+    paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
-    borderRadius: 8,
+    borderRadius: 10,
     alignItems: 'center',
   },
   toggleButtonActive: {
     backgroundColor: colors.accent,
   },
   toggleText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: colors.textSecondary,
   },
   toggleTextActive: {
-    color: colors.background,
+    color: '#0f172a',
   },
   callNowButton: {
     backgroundColor: colors.accent,
-    paddingVertical: spacing.md,
+    paddingVertical: spacing.lg,
     paddingHorizontal: spacing.lg,
-    borderRadius: 12,
+    borderRadius: 14,
     alignItems: 'center',
     marginBottom: spacing.lg,
+    shadowColor: colors.accent,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
   },
   callNowText: {
-    color: colors.background,
+    color: '#0f172a',
     fontSize: 18,
     fontWeight: '700',
   },
@@ -355,7 +463,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   buttonText: {
-    color: colors.background,
+    color: '#0f172a',
     fontSize: 16,
     fontWeight: '600',
   },

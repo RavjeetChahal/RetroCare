@@ -6,8 +6,9 @@ import anomalyRoutes from '../anomaly/anomalyController';
 const router = Router();
 
 // Mount route handlers
-router.use('/api', callRoutes);
-router.use('/api/vapi', vapiRoutes);
-router.use('/api', anomalyRoutes);
+// Note: These routes are already prefixed with /api in server.ts
+router.use(callRoutes);
+router.use('/vapi', vapiRoutes);
+router.use(anomalyRoutes);
 
 export default router;

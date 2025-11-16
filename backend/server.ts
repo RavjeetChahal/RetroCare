@@ -65,7 +65,7 @@ app.get('/health', (req, res) => {
 });
 
 // API routes (must come before static file serving)
-app.use(routes);
+app.use('/api', routes);
 
 // Serve static frontend files (if dist folder exists from Expo export)
 const frontendPath = path.resolve(process.cwd(), 'dist');
