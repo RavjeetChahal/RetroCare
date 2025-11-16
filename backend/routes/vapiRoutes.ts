@@ -45,6 +45,173 @@ interface VAPIWebhookPayload {
   };
 }
 
+type RawToolCallPayload = {
+  id?: string;
+  name?: string;
+  toolName?: string;
+  parameters?: unknown;
+  args?: unknown;
+  result?: unknown;
+  function?: {
+    name?: string;
+    arguments?: unknown;
+    result?: unknown;
+  };
+};
+
+type NormalizedToolCallPayload = {
+  id?: string;
+  name: string;
+  parameters: Record<string, unknown>;
+  result?: unknown;
+};
+
+function coalesce<T>(...values: Array<T | null | undefined>): T | undefined {
+  for (const value of values) {
+    if (value !== undefined && value !== null) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function parseToolArguments(args: unknown): Record<string, unknown> {
+  if (!args) {
+    return {};
+  }
+
+  if (typeof args === 'string') {
+    try {
+      const parsed = JSON.parse(args);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch (error: any) {
+      logger.warn('⚠️ [TOOL PAYLOAD] Failed to parse tool arguments JSON string', {
+        error: error.message,
+        rawArgs: args,
+      });
+    }
+    return {};
+  }
+
+  if (typeof args === 'object' && !Array.isArray(args)) {
+    return args as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function normalizeToolCallPayload(raw: RawToolCallPayload, index: number): NormalizedToolCallPayload | null {
+  if (!raw) {
+    return null;
+  }
+
+  const name = raw.name || raw.toolName || raw.function?.name;
+  if (!name) {
+    logger.warn('⚠️ [TOOL PAYLOAD] Tool call missing name', { index, raw });
+    return null;
+  }
+
+  const parameters = parseToolArguments(
+    coalesce(raw.parameters, raw.args, raw.function?.arguments)
+  );
+
+  const result = coalesce(raw.result, raw.function?.result);
+
+  return {
+    id: raw.id,
+    name,
+    parameters,
+    result,
+  };
+}
+
+function normalizeToolCallList(rawCalls?: unknown): NormalizedToolCallPayload[] {
+  if (!Array.isArray(rawCalls)) {
+    return [];
+  }
+
+  const normalized: NormalizedToolCallPayload[] = [];
+  rawCalls.forEach((raw, index) => {
+    const normalizedCall = normalizeToolCallPayload(raw as RawToolCallPayload, index);
+    if (normalizedCall) {
+      normalized.push(normalizedCall);
+    }
+  });
+  return normalized;
+}
+
+function extractToolCallsFromPayload(payload: any, callData?: any): NormalizedToolCallPayload[] {
+  const toolCallSources = [
+    callData?.toolCalls,
+    payload?.toolCalls,
+    payload?.message?.toolCalls,
+    payload?.message?.toolCallList,
+    payload?.message?.toolWithToolCallList?.map((entry: any) => entry?.toolCall).filter(Boolean),
+  ];
+
+  const aggregated: NormalizedToolCallPayload[] = [];
+  toolCallSources.forEach((source) => {
+    const normalized = normalizeToolCallList(source);
+    aggregated.push(...normalized);
+  });
+
+  const seen = new Set<string>();
+  const deduped: NormalizedToolCallPayload[] = [];
+
+  aggregated.forEach((toolCall) => {
+    const key = toolCall.id || `${toolCall.name}-${deduped.length}`;
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    deduped.push(toolCall);
+  });
+
+  return deduped;
+}
+
+function extractCallPayload(payload: any): any | undefined {
+  const possibleCalls = [
+    payload?.call,
+    payload?.message?.call,
+    payload?.message?.callData,
+    payload?.message?.call_report,
+    payload?.message?.callReport,
+    payload?.message?.callEndedReport,
+    payload?.message?.call_ended,
+  ];
+
+  return possibleCalls.find((c) => c);
+}
+
+function headerValueToString(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+function resolvePatientIdFromSources(...sources: Array<Record<string, unknown> | undefined>): string | undefined {
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    const data = source as Record<string, unknown> & { [key: string]: unknown };
+    const candidate = coalesce(
+      data.patientId as string | undefined,
+      data.patient_id as string | undefined,
+      data.patientID as string | undefined,
+      (data.patient as { id?: string } | undefined)?.id,
+    );
+    if (candidate) {
+      return String(candidate);
+    }
+  }
+  return undefined;
+}
+
 /**
  * POST /api/vapi/call-ended
  * Webhook endpoint for VAPI call-ended events
@@ -53,39 +220,57 @@ router.post('/call-ended', async (req: Request, res: Response) => {
   const webhookStartTime = Date.now();
   try {
     const payload: VAPIWebhookPayload = req.body;
+    const messagePayload = (req.body && (req.body as any).message) || payload.message || {};
+    const callData = extractCallPayload(req.body);
+    const normalizedToolCalls = extractToolCallsFromPayload(req.body, callData);
+    
+    const callStatus = callData?.status;
+    const normalizedStatus = callStatus ? String(callStatus).toLowerCase() : undefined;
+    const messageType = messagePayload?.type ? String(messagePayload.type).toLowerCase() : undefined;
+    const isEndedStatus = !normalizedStatus || ['ended', 'completed', 'finished'].includes(normalizedStatus);
+    const isCallEvent = messageType ? messageType.includes('call') : false;
     
     logger.info('📞 [WEBHOOK] Received VAPI call-ended webhook', {
       timestamp: new Date().toISOString(),
-      callId: payload.call?.id,
-      status: payload.call?.status,
-      customerNumber: payload.call?.customer?.number,
-      assistantId: payload.call?.assistantId,
-      hasTranscript: !!payload.call?.transcript,
-      transcriptLength: payload.call?.transcript?.length || 0,
-      toolCallsCount: payload.call?.toolCalls?.length || 0,
-      hasSummary: !!payload.call?.summary,
-      summaryLength: payload.call?.summary?.length || 0,
-      hasRecordingUrl: !!(payload.call?.recordingUrl || payload.call?.recording?.url),
+      callId: callData?.id,
+      status: callData?.status,
+      customerNumber: callData?.customer?.number || messagePayload?.customer?.number || messagePayload?.phoneNumber?.number,
+      assistantId: callData?.assistantId || messagePayload?.assistantId || messagePayload?.assistant?.id,
+      hasTranscript: !!callData?.transcript,
+      transcriptLength: callData?.transcript?.length || 0,
+      toolCallsCount: normalizedToolCalls.length,
+      hasSummary: !!callData?.summary,
+      summaryLength: callData?.summary?.length || 0,
+      hasRecordingUrl: !!(callData?.recordingUrl || callData?.recording?.url),
       payloadKeys: Object.keys(payload || {}),
-      callKeys: payload.call ? Object.keys(payload.call) : [],
+      callKeys: callData ? Object.keys(callData) : [],
     });
     
-    if (!payload.call || payload.call.status !== 'ended') {
-      logger.info('⚠️ [WEBHOOK] Webhook ignored - call not ended', {
-        callId: payload.call?.id,
-        status: payload.call?.status,
-        hasCall: !!payload.call,
+    if (!callData) {
+      logger.info('⚠️ [WEBHOOK] Webhook ignored - call payload missing', {
+        hasCall: false,
+        payloadKeys: Object.keys(payload || {}),
+        messageKeys: Object.keys(messagePayload || {}),
       });
-      return res.status(200).json({ received: true });
+      return res.status(200).json({ received: true, error: 'Missing call payload' });
     }
     
-    const callId = payload.call.id;
-    const customerNumber = payload.call.customer?.number;
-    const assistantId = payload.call.assistantId;
-    const transcript = payload.call.transcript || '';
-    const recordingUrl = payload.call.recordingUrl || payload.call.recording?.url;
-    const summary = payload.call.summary || '';
-    const toolCalls = payload.call.toolCalls || [];
+    if (!isEndedStatus && !isCallEvent) {
+      logger.info('⚠️ [WEBHOOK] Webhook ignored - call not ended yet', {
+        callId: callData?.id,
+        status: callData?.status,
+        messageType,
+      });
+      return res.status(200).json({ received: true, note: 'Call not marked as ended yet' });
+    }
+    
+    const callId = callData.id || messagePayload?.callId || (req.headers['x-vapi-call-id'] as string) || 'unknown';
+    const customerNumber = callData.customer?.number || messagePayload?.customer?.number || messagePayload?.phoneNumber?.number;
+    const assistantId = callData.assistantId || messagePayload?.assistantId || messagePayload?.assistant?.id;
+    const transcript = callData.transcript || '';
+    const recordingUrl = callData.recordingUrl || callData.recording?.url;
+    const summary = callData.summary || '';
+    const toolCalls = normalizedToolCalls;
     
     logger.info('📞 [WEBHOOK] Processing call-ended webhook', {
       callId,
@@ -1033,6 +1218,135 @@ router.post('/tool', async (req: Request, res: Response) => {
       },
       rawBody: JSON.stringify(req.body, null, 2),
     });
+
+    const messagePayload = (req.body && (req.body as any).message) || {};
+    const callPayload = (req.body && (req.body as any).call) || messagePayload.call;
+    const normalizedToolCalls = extractToolCallsFromPayload(req.body, callPayload);
+
+    if (normalizedToolCalls.length > 0) {
+      logger.info('🔧 [TOOL ENDPOINT] Handling batched tool call payload', {
+        toolCallsCount: normalizedToolCalls.length,
+        toolCallIds: normalizedToolCalls.map((call) => call.id),
+        toolCallNames: normalizedToolCalls.map((call) => call.name),
+      });
+
+      const resolvedCallId =
+        coalesce(
+          callPayload?.id as string | undefined,
+          req.body?.callId as string | undefined,
+          messagePayload?.callId as string | undefined,
+          headerValueToString(req.headers['x-vapi-call-id']),
+        ) || 'unknown';
+
+      const assistantId = coalesce(
+        callPayload?.assistantId as string | undefined,
+        messagePayload?.assistantId as string | undefined,
+        messagePayload?.assistant?.id as string | undefined,
+        headerValueToString(req.headers['x-vapi-assistant-id']),
+      );
+
+      const assistant = assistantId ? getAssistantById(assistantId) : null;
+      const assistantName = assistant?.name || messagePayload?.assistant?.name || 'Unknown';
+
+      const assistantVariables = messagePayload?.assistant?.variableValues as Record<string, unknown> | undefined;
+      const defaultPatientId = resolvePatientIdFromSources(
+        assistantVariables,
+        callPayload as Record<string, unknown> | undefined,
+        req.body as Record<string, unknown> | undefined,
+      );
+
+      const batchedResults: Array<{ toolCallId: string; success: boolean; result?: unknown; error?: string }> = [];
+
+      for (let i = 0; i < normalizedToolCalls.length; i++) {
+        const toolCallEntry = normalizedToolCalls[i];
+        const parameters = toolCallEntry.parameters || {};
+        const resolvedPatientId = resolvePatientIdFromSources(
+          parameters as Record<string, unknown>,
+          assistantVariables,
+          callPayload as Record<string, unknown> | undefined,
+          defaultPatientId ? ({ patientId: defaultPatientId } as Record<string, unknown>) : undefined,
+        );
+
+        if (!resolvedPatientId) {
+          logger.error('❌ [TOOL ENDPOINT] Tool call missing patientId (batched payload)', {
+            toolCallId: toolCallEntry.id,
+            toolName: toolCallEntry.name,
+            parameterKeys: Object.keys(parameters || {}),
+            assistantId,
+          });
+          return res.status(400).json({
+            success: false,
+            error: 'patientId is required in parameters',
+            toolCallId: toolCallEntry.id,
+            toolName: toolCallEntry.name,
+          });
+        }
+
+        const perCallId =
+          coalesce(
+            parameters['callId'] as string | undefined,
+            parameters['call_id'] as string | undefined,
+            resolvedCallId,
+          ) || 'unknown';
+
+        const context = {
+          patientId: resolvedPatientId,
+          callId: perCallId,
+          assistantName,
+          timestamp: new Date().toISOString(),
+        };
+
+        logger.info('🔧 [TOOL ENDPOINT] Processing tool call (batched payload)', {
+          toolCallId: toolCallEntry.id,
+          toolName: toolCallEntry.name,
+          patientId: resolvedPatientId,
+          callId: perCallId,
+          assistantName,
+          parameterKeys: Object.keys(parameters || {}),
+        });
+
+        const routeStartTime = Date.now();
+        const result = await routeToolCall(
+          {
+            name: toolCallEntry.name,
+            parameters,
+          },
+          context,
+        );
+        const routeDuration = Date.now() - routeStartTime;
+
+        logger.info('🔧 [TOOL ENDPOINT] Tool call routed (batched)', {
+          toolCallId: toolCallEntry.id,
+          toolName: toolCallEntry.name,
+          patientId: resolvedPatientId,
+          callId: perCallId,
+          success: result.success,
+          hasResult: !!result.result,
+          hasError: !!result.error,
+          error: result.error,
+          routeDurationMs: routeDuration,
+        });
+
+        batchedResults.push({
+          toolCallId: toolCallEntry.id || `${toolCallEntry.name}-${i}`,
+          success: result.success,
+          result: result.result,
+          error: result.error,
+        });
+      }
+
+      const success = batchedResults.every((entry) => entry.success);
+
+      logger.info('✅ [TOOL ENDPOINT] Batched tool calls processed', {
+        totalToolCalls: batchedResults.length,
+        success,
+      });
+
+      return res.json({
+        success,
+        results: batchedResults,
+      });
+    }
 
     // VAPI sends tool calls in different formats depending on configuration
     // Format 1: Direct tool call with name and parameters

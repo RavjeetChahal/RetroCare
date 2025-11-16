@@ -119,13 +119,27 @@ export async function makeCallWithRetry(
       await new Promise((resolve) => setTimeout(resolve, 2000));
       const status = await getCallStatus(response.id);
 
+      const normalizedStatus = status.status ? String(status.status).toLowerCase() : undefined;
+      const normalizedReason = status.endedReason ? String(status.endedReason).toLowerCase() : undefined;
+      const activeStatuses = new Set(['initiated', 'initializing', 'in_progress', 'in-progress', 'running', 'queued', 'ringing']);
+
       // Check if call was answered (not voicemail)
-      if (status.status === 'ended' && status.endedReason !== 'voicemail') {
+      if (normalizedStatus === 'ended' && normalizedReason !== 'voicemail') {
         logger.info('VAPI call successful', { callId: response.id, attempt });
         return { success: true, callId: response.id };
       }
 
-      if (status.endedReason === 'voicemail') {
+      if (!normalizedStatus || activeStatuses.has(normalizedStatus)) {
+        logger.info('VAPI call still active, assuming success', {
+          callId: response.id,
+          attempt,
+          status: status.status,
+          endedReason: status.endedReason,
+        });
+        return { success: true, callId: response.id };
+      }
+
+      if (normalizedReason === 'voicemail') {
         logger.warn('Call went to voicemail, will retry', { callId: response.id, attempt });
         lastError = 'voicemail';
       } else {
