@@ -1,12 +1,18 @@
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
+import { logger } from './logger';
 
 /**
  * Token cache that uses sessionStorage on web (clears when tab closes)
  * and SecureStore on native (we'll clear it on app start)
  */
+const logTokenAction = (action: string, key?: string) => {
+  logger.debug(`tokenCache:${action}`, { key, platform: Platform.OS });
+};
+
 export const tokenCache = {
   getToken: async (key: string) => {
+    logTokenAction('get', key);
     if (Platform.OS === 'web') {
       // Use sessionStorage on web - automatically clears when tab closes
       return typeof window !== 'undefined' ? window.sessionStorage.getItem(key) : null;
@@ -14,6 +20,7 @@ export const tokenCache = {
     return SecureStore.getItemAsync(key);
   },
   saveToken: async (key: string, value: string) => {
+    logTokenAction('save', key);
     if (Platform.OS === 'web') {
       // Use sessionStorage on web - automatically clears when tab closes
       if (typeof window !== 'undefined') {
@@ -24,6 +31,7 @@ export const tokenCache = {
     return SecureStore.setItemAsync(key, value);
   },
   clearAll: async () => {
+    logTokenAction('clearAll');
     if (Platform.OS === 'web') {
       // Clear all sessionStorage items
       if (typeof window !== 'undefined') {
@@ -42,8 +50,10 @@ export const tokenCache = {
     for (const key of clerkKeys) {
       try {
         await SecureStore.deleteItemAsync(key);
+        logTokenAction('clearKey', key);
       } catch {
         // Ignore errors if key doesn't exist
+        logTokenAction('clearKeySkipped', key);
       }
     }
   },
