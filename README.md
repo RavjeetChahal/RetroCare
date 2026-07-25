@@ -1,69 +1,139 @@
 # RetroCare
 
-RetroCare is a caregiver-facing companion app built with Expo + Expo Router on the frontend and a Node/Supabase stack for backend modules.
+RetroCare is a caregiver dashboard for managing patient check-ins. A caregiver can create a patient profile, record medications and conditions, save preferred call times, preview and select a voice, manually start a phone call, and review information collected from calls.
 
-## Getting Started
+The repository contains two main components:
 
-### 1. Install Dependencies
+- An Expo/React Native app for authentication, onboarding, patient selection, and dashboard views.
+- An Express API that starts Vapi calls, receives Vapi webhooks and tool calls, generates ElevenLabs voice previews, and stores data in Supabase.
 
-```sh
+## What is implemented
+
+- Clerk sign-up and sign-in.
+- Caregiver and patient onboarding backed by Supabase.
+- Preferred call times stored with each patient profile.
+- Manual outbound calls through Vapi.
+- Vapi webhook handling for call outcomes, transcripts, medication status, mood, sleep data, summaries, and health flags.
+- A dashboard showing recent calls, medications, mood, sleep, and flags from stored patient data.
+- Patient history/calendar views.
+- ElevenLabs voice previews during onboarding.
+
+RetroCare depends on configured third-party accounts and is not a standalone medical monitoring or emergency alert service.
+
+## Tech stack
+
+- Expo 54, React Native, Expo Router, TypeScript
+- Clerk authentication
+- Supabase database and realtime subscriptions
+- Express backend
+- Vapi calls and webhooks
+- ElevenLabs text-to-speech previews
+
+## Local setup
+
+### Prerequisites
+
+- Node.js and npm
+- Clerk, Supabase, Vapi, and ElevenLabs credentials for their respective features
+
+### 1. Install JavaScript dependencies
+
+```bash
 npm install
 ```
 
-### 2. Environment Variables Setup
+### 2. Configure the environment
 
-**Important:** This project uses separate environment files for frontend (Expo) and backend (Node.js) to keep sensitive keys secure.
+Copy the example file:
 
-#### Frontend Environment (Root `.env`)
-Create a `.env` file in the project root with **public** variables only:
-
-```sh
+```bash
 cp env.example .env
 ```
 
-The root `.env` should contain:
-- `EXPO_PUBLIC_*` variables (Supabase URL, Clerk keys, etc.)
-- `EXPO_PUBLIC_API_URL` (backend server URL)
+The Expo client reads only variables prefixed with `EXPO_PUBLIC_`. The Express server loads `backend/.env` when present and otherwise falls back to the root `.env`.
 
-**Never put sensitive keys in the root `.env`** - they will be bundled into the Expo app.
+Required for the client:
 
-#### Backend Environment (`backend/.env`)
-Create a `backend/.env` file with **all sensitive keys**:
-
-```sh
-cp backend/env.example backend/.env
+```dotenv
+EXPO_PUBLIC_SUPABASE_URL=
+EXPO_PUBLIC_SUPABASE_ANON_KEY=
+EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY=
+EXPO_PUBLIC_API_URL=http://localhost:3000
 ```
 
-The `backend/.env` should contain:
-- `ELEVENLABS_API_KEY` (for voice previews)
-- `VAPI_API_KEY` (for phone calls)
-- `SUPABASE_SERVICE_ROLE_KEY` (backend admin key)
-- `VAPI_PHONE_NUMBER_ID` (required)
-- `VAPI_ASSISTANT_ID` (optional - only used as fallback; each voice has its own assistant ID)
-- `PORT` (backend server port)
+Required for the backend call and preview flows:
 
-**Note:** `VAPI_ASSISTANT_ID` is optional because each voice option (Kenji, Priya, Lucy, Clyde, Julia) has its own assistant ID. When users select a voice during onboarding, that assistant ID is stored in the patient's `voice_choice` field and used for their calls.
+```dotenv
+SUPABASE_SERVICE_ROLE_KEY=
+VAPI_API_KEY=
+VAPI_PHONE_NUMBER_ID=
+ELEVENLABS_API_KEY=
+```
 
-**Security Note:** The `backend/.env` file is gitignored and should never be committed.
+Optional backend variables:
 
-### 3. Start the Application
+```dotenv
+PORT=3000
+VAPI_ASSISTANT_ID=
+VAPI_WEBHOOK_URL=
+```
 
-**Start the backend server:**
-```sh
+Do not expose service-role or provider API keys through `EXPO_PUBLIC_` variables.
+
+### 3. Create the database
+
+Run [backend/supabase/schema.sql](backend/supabase/schema.sql) in the Supabase SQL editor, followed by any files in [backend/supabase/migrations](backend/supabase/migrations) that have not already been applied.
+
+### 4. Start the app
+
+Run the backend:
+
+```bash
 npm run backend
 ```
 
-**Start the Expo frontend (in a separate terminal):**
-```sh
+In a second terminal, start Expo:
+
+```bash
 npm start
 ```
 
-The Expo CLI will let you open the project in Expo Go (iOS/Android) or the web preview.
+You can also target a platform directly:
 
-## Repository Guardrails
+```bash
+npm run web
+npm run android
+npm run ios
+```
 
-- `masterprompt.md` is the source of truth for every development rule.
-- Frontend modules live under `app/`, shared client utilities stay in `components/`, `hooks/`, `styles/`, and `utils/`.
-- Backend work must stay inside the `backend/` tree to avoid merge conflicts with mobile development.
+For web development, `EXPO_PUBLIC_API_URL` normally points to `http://localhost:3000`. Physical devices must use a backend URL reachable from the device rather than `localhost`.
 
-Refer to the phase checklist inside `masterprompt.md` before editing core files.
+## Useful commands
+
+```bash
+npm run build:web
+```
+
+This repository does not currently define a general unit-test or lint command.
+
+## Project structure
+
+```text
+app/                    Expo Router screens
+components/             Reusable UI components
+hooks/                  Client state and realtime hooks
+utils/                  Client-side services
+backend/                Express API, integrations, and SQL
+scripts/                Setup and integration-check scripts
+```
+
+## Health checks
+
+With the Express backend running:
+
+- `GET /health` checks the Node service.
+- `GET /api/diagnostics/health` checks that the diagnostics router is available.
+
+## License
+
+See [LICENSE](LICENSE).
