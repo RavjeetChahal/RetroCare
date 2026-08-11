@@ -21,9 +21,19 @@ def cosine_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         Cosine similarity value between -1 and 1 (typically 0 to 1 for normalized embeddings)
     """
     try:
-        # Ensure embeddings are numpy arrays
-        emb1 = np.array(embedding1)
-        emb2 = np.array(embedding2)
+        # Convert to a predictable numeric type before validating. Invalid model
+        # output should fail the comparison, not be interpreted as an anomaly.
+        emb1 = np.asarray(embedding1, dtype=np.float64)
+        emb2 = np.asarray(embedding2, dtype=np.float64)
+
+        if emb1.ndim != 1 or emb2.ndim != 1:
+            raise ValueError("Embeddings must be one-dimensional vectors")
+
+        if emb1.size == 0 or emb2.size == 0:
+            raise ValueError("Embeddings cannot be empty")
+
+        if not np.all(np.isfinite(emb1)) or not np.all(np.isfinite(emb2)):
+            raise ValueError("Embeddings must contain only finite values")
         
         # Check dimensions match
         if emb1.shape != emb2.shape:
@@ -36,13 +46,16 @@ def cosine_similarity(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         norm1 = np.linalg.norm(emb1)
         norm2 = np.linalg.norm(emb2)
         
-        # Avoid division by zero
+        # A zero vector is not a valid voice embedding. Returning 0 similarity
+        # here would turn a processing failure into a maximum anomaly alert.
         if norm1 == 0 or norm2 == 0:
-            logger.warning("Zero norm embedding detected")
-            return 0.0
+            raise ValueError("Embeddings must have a non-zero norm")
         
         # Cosine similarity
         similarity = dot_product / (norm1 * norm2)
+
+        if not np.isfinite(similarity):
+            raise ValueError("Cosine similarity is not finite")
         
         # Clamp to [-1, 1] range
         similarity = max(-1.0, min(1.0, similarity))

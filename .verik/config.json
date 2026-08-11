@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "provider": "openai",
+  "models": {
+    "scout": "gpt-4o",
+    "reviewer": "gpt-4o",
+    "judge": "gpt-4o"
+  },
+  "builder": {
+    "enabled": true,
+    "timeoutMs": 600000,
+    "maxLogBytes": 100000,
+    "installDependencies": false
+  },
+  "verification": {
+    "includeUntrackedFiles": true,
+    "maxDiffBytes": 500000,
+    "maxFileBytes": 150000
+  },
+  "privacy": {
+    "redactEnvironmentValues": true,
+    "excludePatterns": [
+      ".env",
+      ".env.*",
+      "**/*.pem",
+      "**/*.key",
+      "**/credentials.*"
+    ]
+  },
+  "inferenceTimeoutMs": 120000,
+  "runsToKeep": 100,
+  "mode": "full"
+}
