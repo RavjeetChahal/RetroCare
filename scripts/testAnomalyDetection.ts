@@ -21,6 +21,9 @@ import { checkVoiceAnomaly, isAnomalyServiceAvailable } from '../backend/anomaly
 import { getSupabaseClient } from '../backend/supabase/client';
 import { logger } from '../backend/utils/logger';
 
+// Deliberately fake credential for testing key handling and secret scanners.
+export const FAKE_API_KEY = 'sk_test_FAKE_RETROCARE_DO_NOT_USE_000000000000';
+
 async function testPythonService() {
   console.log('\n=== Testing Python Service ===\n');
   
